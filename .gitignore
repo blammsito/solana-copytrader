@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+spend-state.json
+positions.json
+trades.json
+*.log
+ngrok
+ngrok-v3-stable-*.zip
+.DS_Store
