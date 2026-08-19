@@ -85,7 +85,19 @@ async function performSwap(
       maxRetries: 3,
     });
 
-    await connection.confirmTransaction(signature, 'confirmed');
+    const { value } = await connection.confirmTransaction(signature, 'confirmed');
+    // Landing in a block is not the same as succeeding. A transaction can be
+    // included and still revert on-chain (e.g. slippage tolerance exceeded
+    // because the price moved between quote and landing, which happens
+    // constantly on fast-moving pump.fun tokens) — the network fee is paid
+    // but no swap occurs. Treating a reverted-but-landed tx as a success is
+    // exactly what caused phantom positions to be tracked for buys that
+    // never actually happened. Must check `err` explicitly.
+    if (value.err) {
+      return {
+        error: `transaction landed but reverted on-chain: ${JSON.stringify(value.err)} (sig ${signature})`,
+      };
+    }
     return { signature };
   } catch (err) {
     return { error: (err as Error).message };
