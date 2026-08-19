@@ -18,58 +18,79 @@ console.log(
 );
 console.log('='.repeat(60));
 
+// Mints currently mid-handleSignal, from the moment a signal comes in to the
+// moment a position is persisted (or the attempt is abandoned). Webhook
+// providers can redeliver the same event, and a single on-chain transaction
+// can trigger more than one detection path — without this guard, two
+// concurrent calls for the same mint both pass the hasOpenPosition() check
+// (since neither has written a position yet) and both proceed to buy,
+// doubling API calls and risking a duplicate spend. This closes that race:
+// the set is checked and claimed synchronously, before any `await`, so a
+// second concurrent call for the same mint is rejected immediately.
+const mintsInFlight = new Set<string>();
+
 async function handleSignal(signal: BuySignal) {
   const { mint } = signal;
 
-  if (hasOpenPosition(mint)) {
-    console.log(`[index] SKIPPED ${mint}: already holding an open position in this token`);
+  if (mintsInFlight.has(mint)) {
+    console.log(`[index] SKIPPED ${mint}: already processing a signal for this token`);
     return;
   }
+  mintsInFlight.add(mint);
 
-  const spendCheck = checkSpendAllowed(mint, config.positionSizeSol);
-  if (!spendCheck.allowed) {
-    console.log(`[index] SKIPPED ${mint}: ${spendCheck.reason}`);
-    return;
-  }
+  try {
+    if (hasOpenPosition(mint)) {
+      console.log(`[index] SKIPPED ${mint}: already holding an open position in this token`);
+      return;
+    }
 
-  const risk = await runRiskChecks(mint, config.positionSizeSol);
-  if (!risk.passed) {
-    return; // runRiskChecks already logs the reason
-  }
+    const spendCheck = checkSpendAllowed(mint, config.positionSizeSol);
+    if (!spendCheck.allowed) {
+      console.log(`[index] SKIPPED ${mint}: ${spendCheck.reason}`);
+      return;
+    }
 
-  const result = await executeBuy(mint, config.positionSizeSol);
+    const risk = await runRiskChecks(mint, config.positionSizeSol);
+    if (!risk.passed) {
+      return; // runRiskChecks already logs the reason
+    }
 
-  if (result.error) {
-    console.error(`[index] execution failed for ${mint}: ${result.error}`);
-    return;
-  }
+    const result = await executeBuy(mint, config.positionSizeSol);
 
-  // Only count the spend / open a tracked position once we know the buy
-  // actually happened (or was dry-run logged, so the full pipeline —
-  // including exit monitoring — can still be exercised end-to-end in
-  // dry-run testing).
-  recordBuy(mint, config.positionSizeSol);
+    if (result.error) {
+      console.error(`[index] execution failed for ${mint}: ${result.error}`);
+      return;
+    }
 
-  if (result.outAmountRaw) {
-    addPosition({
-      mint,
-      sourceWallet: signal.walletAddress,
-      entrySolSpent: config.positionSizeSol,
-      tokensAmountRaw: result.outAmountRaw,
-      boughtAt: Date.now(),
-      buySignature: result.signature,
-      dryRun: result.dryRun,
-    });
-  } else {
-    console.warn(
-      `[index] bought ${mint} but no output amount was returned — position will not be tracked for auto-exit. Check manually.`
-    );
-  }
+    // Only count the spend / open a tracked position once we know the buy
+    // actually happened (or was dry-run logged, so the full pipeline —
+    // including exit monitoring — can still be exercised end-to-end in
+    // dry-run testing).
+    recordBuy(mint, config.positionSizeSol);
 
-  if (result.dryRun) {
-    console.log(`[index] DRY RUN complete for ${mint} — no funds moved.`);
-  } else {
-    console.log(`[index] LIVE buy complete for ${mint} — sig ${result.signature}`);
+    if (result.outAmountRaw) {
+      addPosition({
+        mint,
+        sourceWallet: signal.walletAddress,
+        entrySolSpent: config.positionSizeSol,
+        tokensAmountRaw: result.outAmountRaw,
+        boughtAt: Date.now(),
+        buySignature: result.signature,
+        dryRun: result.dryRun,
+      });
+    } else {
+      console.warn(
+        `[index] bought ${mint} but no output amount was returned — position will not be tracked for auto-exit. Check manually.`
+      );
+    }
+
+    if (result.dryRun) {
+      console.log(`[index] DRY RUN complete for ${mint} — no funds moved.`);
+    } else {
+      console.log(`[index] LIVE buy complete for ${mint} — sig ${result.signature}`);
+    }
+  } finally {
+    mintsInFlight.delete(mint);
   }
 }
 
