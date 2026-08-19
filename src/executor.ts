@@ -4,6 +4,13 @@ import { config } from './config';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+// A growing share of newer pump.fun launches mint under Token-2022
+// (transfer-fee-capable tokens) rather than the legacy SPL Token program.
+// Checking only the legacy program produced false "wallet holds no tokens"
+// errors for any Token-2022 mint, permanently blocking real sells even
+// though the wallet genuinely held the balance — this was traced directly
+// to real stuck positions (Token-2022 mints) that could never be sold.
+const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
 
 const connection = new Connection(config.heliusRpcUrl, 'confirmed');
 
@@ -13,25 +20,34 @@ const connection = new Connection(config.heliusRpcUrl, 'confirmed');
  * estimate from the buy-time quote — real settlement can land lower (price
  * impact between quote and execution, or a transfer tax some pump.fun tokens
  * charge) — so selling against that stale estimate can ask for more than the
- * wallet actually holds, which fails identically on every route. Returns
- * null if the account can't be read (e.g. no token account exists at all).
+ * wallet actually holds, which fails identically on every route. Checks both
+ * the legacy SPL Token program and Token-2022, since a mint only ever lives
+ * under one of the two and we don't know which ahead of time. Returns null
+ * if no token account for this mint exists under either program.
  */
 async function getActualTokenBalance(owner: PublicKey, mint: string): Promise<string | null> {
-  try {
-    const { value } = await connection.getParsedTokenAccountsByOwner(owner, {
-      mint: new PublicKey(mint),
-      programId: TOKEN_PROGRAM_ID,
-    });
-    if (value.length === 0) return null;
-    // Sum across accounts in the unlikely case there's more than one.
-    const total = value.reduce(
-      (sum, acc) => sum + BigInt(acc.account.data.parsed.info.tokenAmount.amount),
-      0n
-    );
-    return total.toString();
-  } catch {
-    return null;
+  const mintKey = new PublicKey(mint);
+  let total = 0n;
+  let foundAny = false;
+
+  for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
+    try {
+      const { value } = await connection.getParsedTokenAccountsByOwner(owner, {
+        mint: mintKey,
+        programId,
+      });
+      for (const acc of value) {
+        foundAny = true;
+        total += BigInt(acc.account.data.parsed.info.tokenAmount.amount);
+      }
+    } catch {
+      // Ignore and try the other program — a lookup failure on one program
+      // shouldn't mask a valid balance held under the other.
+    }
   }
+
+  if (!foundAny) return null;
+  return total.toString();
 }
 
 function jupiterHeaders(extra?: Record<string, string>): Record<string, string> {
