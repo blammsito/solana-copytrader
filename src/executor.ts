@@ -15,18 +15,17 @@ const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqC
 const connection = new Connection(config.heliusRpcUrl, 'confirmed');
 
 /**
- * Reads the wallet's actual current balance of `mint` directly from the
- * chain. The amount recorded when a position was opened is only ever an
- * estimate from the buy-time quote — real settlement can land lower (price
- * impact between quote and execution, or a transfer tax some pump.fun tokens
- * charge) — so selling against that stale estimate can ask for more than the
- * wallet actually holds, which fails identically on every route. Checks both
- * the legacy SPL Token program and Token-2022, since a mint only ever lives
- * under one of the two and we don't know which ahead of time. Returns null
- * if no token account for this mint exists under either program.
+ * Direct RPC balance lookup via getParsedTokenAccountsByOwner, checking both
+ * the legacy SPL Token program and Token-2022 (a mint only ever lives under
+ * one of the two, and we don't know which ahead of time). This is normally
+ * authoritative, but Helius's getParsedTokenAccountsByOwner (a
+ * getProgramAccounts-family call) has shown repeated flakiness specifically
+ * for Token-2022 accounts — returning zero accounts for a mint even seconds
+ * after getTransaction confirms the tokens landed in this exact wallet.
+ * Returns null (not '0') if no account was found, so the caller can tell
+ * "confirmed zero" apart from "this call found nothing."
  */
-async function getActualTokenBalance(owner: PublicKey, mint: string): Promise<string | null> {
-  const mintKey = new PublicKey(mint);
+async function getBalanceViaRpc(owner: PublicKey, mintKey: PublicKey): Promise<string | null> {
   let total = 0n;
   let foundAny = false;
 
@@ -46,8 +45,74 @@ async function getActualTokenBalance(owner: PublicKey, mint: string): Promise<st
     }
   }
 
-  if (!foundAny) return null;
-  return total.toString();
+  return foundAny ? total.toString() : null;
+}
+
+/**
+ * Fallback balance lookup via Helius's indexed DAS API (getAssetsByOwner).
+ * This hits a different, pre-indexed data path than getParsedTokenAccountsByOwner
+ * and has proven reliable exactly where that call flakes — confirmed by
+ * cross-checking against getTransaction's postTokenBalances on real stuck
+ * positions, where DAS correctly reported the balance getParsedTokenAccountsByOwner
+ * was missing entirely.
+ */
+async function getBalanceViaDAS(owner: PublicKey, mint: string): Promise<string | null> {
+  try {
+    const res = await fetch(config.heliusRpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'das-balance-check',
+        method: 'getAssetsByOwner',
+        params: {
+          ownerAddress: owner.toBase58(),
+          page: 1,
+          limit: 1000,
+          displayOptions: { showFungible: true },
+        },
+      }),
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as any;
+    const items: any[] = json?.result?.items ?? [];
+    const match = items.find((item) => item.id === mint);
+    const balance = match?.token_info?.balance;
+    return balance != null ? String(balance) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Reads the wallet's actual current balance of `mint` directly from the
+ * chain. The amount recorded when a position was opened is only ever an
+ * estimate from the buy-time quote — real settlement can land lower (price
+ * impact between quote and execution, or a transfer tax some pump.fun tokens
+ * charge) — so selling against that stale estimate can ask for more than the
+ * wallet actually holds, which fails identically on every route.
+ *
+ * Queries the direct RPC method and Helius's DAS API in parallel and prefers
+ * the RPC result when it finds an account; falls back to DAS when RPC comes
+ * back empty, which rescues real positions during the RPC's periodic
+ * Token-2022 flakiness instead of permanently reporting them as unsellable.
+ * Returns null only when both sources find nothing.
+ */
+async function getActualTokenBalance(owner: PublicKey, mint: string): Promise<string | null> {
+  const mintKey = new PublicKey(mint);
+  const [rpcBalance, dasBalance] = await Promise.all([
+    getBalanceViaRpc(owner, mintKey),
+    getBalanceViaDAS(owner, mint),
+  ]);
+
+  if (rpcBalance !== null) return rpcBalance;
+  if (dasBalance !== null) {
+    console.warn(
+      `[executor] getParsedTokenAccountsByOwner found no account for ${mint} but DAS reports a balance — using DAS result (${dasBalance})`
+    );
+    return dasBalance;
+  }
+  return null;
 }
 
 function jupiterHeaders(extra?: Record<string, string>): Record<string, string> {
