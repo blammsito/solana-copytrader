@@ -34,11 +34,13 @@ export interface ExecutionResult {
 async function getQuote(
   inputMint: string,
   outputMint: string,
-  amountRaw: string | number
+  amountRaw: string | number,
+  excludeDexes?: string
 ): Promise<{ quote: any; error?: string }> {
   const url =
     `${config.jupiterApiUrl}/quote?inputMint=${inputMint}&outputMint=${outputMint}` +
-    `&amount=${amountRaw}&slippageBps=${config.maxSlippageBps}`;
+    `&amount=${amountRaw}&slippageBps=${config.maxSlippageBps}` +
+    (excludeDexes ? `&excludeDexes=${encodeURIComponent(excludeDexes)}` : '');
   try {
     const res = await fetch(url, { headers: jupiterHeaders() });
     if (!res.ok) {
@@ -194,11 +196,64 @@ export async function executeSell(
     };
   }
 
-  const { signature, error } = await performSwap(quote, signer);
-  if (error) {
-    return { dryRun: false, mint, amountSol: expectedSol, error };
+  const primaryAttempt = await performSwap(quote, signer);
+  if (!primaryAttempt.error) {
+    console.log(`[executor] LIVE sell executed: ${primaryAttempt.signature}`);
+    return {
+      dryRun: false,
+      mint,
+      amountSol: expectedSol,
+      signature: primaryAttempt.signature,
+      outAmountRaw: quote.outAmount,
+    };
   }
 
-  console.log(`[executor] LIVE sell executed: ${signature}`);
-  return { dryRun: false, mint, amountSol: expectedSol, signature, outAmountRaw: quote.outAmount };
+  // Jupiter's router has a known issue building valid sell transactions
+  // against the "Pump.fun Amm" venue specifically for some pools — the quote
+  // looks fine but the transaction fails on-chain (getting out is what
+  // matters here, not getting the best price), even though selling the same
+  // token directly on pump.fun's own site works. If the primary route used
+  // that venue, retry once against any other available route before giving
+  // up, so a position isn't stuck forever against a single broken route.
+  const usedPumpFunAmm = (quote.routePlan ?? []).some(
+    (leg: any) => leg?.swapInfo?.label === 'Pump.fun Amm'
+  );
+  if (!usedPumpFunAmm) {
+    return { dryRun: false, mint, amountSol: expectedSol, error: primaryAttempt.error };
+  }
+
+  console.warn(
+    `[executor] sell via Pump.fun Amm route failed (${primaryAttempt.error}) — retrying with that venue excluded`
+  );
+  const fallback = await getQuote(mint, SOL_MINT, tokensAmountRaw, 'Pump.fun Amm');
+  if (!fallback.quote) {
+    return {
+      dryRun: false,
+      mint,
+      amountSol: expectedSol,
+      error: `primary route failed (${primaryAttempt.error}); fallback quote also failed (${fallback.error})`,
+    };
+  }
+
+  const fallbackExpectedSol = Number(fallback.quote.outAmount) / 1e9;
+  const fallbackAttempt = await performSwap(fallback.quote, signer);
+  if (fallbackAttempt.error) {
+    return {
+      dryRun: false,
+      mint,
+      amountSol: expectedSol,
+      error: `primary route failed (${primaryAttempt.error}); fallback route also failed (${fallbackAttempt.error})`,
+    };
+  }
+
+  console.log(
+    `[executor] LIVE sell executed via fallback route (Pump.fun Amm excluded): ${fallbackAttempt.signature}`
+  );
+  return {
+    dryRun: false,
+    mint,
+    amountSol: fallbackExpectedSol,
+    signature: fallbackAttempt.signature,
+    outAmountRaw: fallback.quote.outAmount,
+  };
 }
