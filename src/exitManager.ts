@@ -43,12 +43,11 @@ export async function checkExits(): Promise<void> {
     if (!reason) continue;
 
     console.log(
-      `[exitManager] SELLING ${pos.mint} — ${reason}. Entry ${pos.entrySolSpent.toFixed(
-        4
-      )} SOL, now worth ~${result.toFixed(4)} SOL`
+      `[exitManager] SELLING ${pos.mint}${pos.dryRun ? ' (dry run position)' : ''} — ${reason}. ` +
+        `Entry ${pos.entrySolSpent.toFixed(4)} SOL, now worth ~${result.toFixed(4)} SOL`
     );
 
-    const sellResult = await executeSell(pos.mint, pos.tokensAmountRaw);
+    const sellResult = await executeSell(pos.mint, pos.tokensAmountRaw, pos.dryRun);
     if (sellResult.error) {
       console.error(`[exitManager] sell failed for ${pos.mint}: ${sellResult.error} — will retry next cycle`);
       continue;

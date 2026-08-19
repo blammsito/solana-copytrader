@@ -13,6 +13,13 @@ export interface Position {
   tokensAmountRaw: string;
   boughtAt: number; // ms epoch
   buySignature?: string;
+  // Whether the BUY that opened this position was a dry-run simulation or a
+  // real trade. This is fixed at open time and must be respected for the
+  // life of the position, independent of whatever DRY_RUN is set to later —
+  // otherwise a position opened while paper-trading gets a real sell attempt
+  // fired at it the moment the bot is flipped live, for a token the wallet
+  // never actually holds.
+  dryRun: boolean;
 }
 
 interface PositionsState {
@@ -25,7 +32,14 @@ function loadState(): PositionsState {
   try {
     const raw = fs.readFileSync(STATE_PATH, 'utf-8');
     const parsed = JSON.parse(raw);
-    return { positions: parsed.positions ?? [] };
+    const positions: Position[] = (parsed.positions ?? []).map((p: any) => ({
+      // Fail safe: any position persisted before this field existed (or
+      // missing it for any other reason) is treated as dry-run so it can
+      // never trigger a real sell of a token we don't actually hold.
+      dryRun: true,
+      ...p,
+    }));
+    return { positions };
   } catch {
     return { positions: [] };
   }

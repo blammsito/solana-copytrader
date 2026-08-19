@@ -58,6 +58,7 @@ async function handleSignal(signal: BuySignal) {
       tokensAmountRaw: result.outAmountRaw,
       boughtAt: Date.now(),
       buySignature: result.signature,
+      dryRun: result.dryRun,
     });
   } else {
     console.warn(

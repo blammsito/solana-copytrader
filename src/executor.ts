@@ -138,19 +138,26 @@ export async function executeBuy(mint: string, amountSol: number): Promise<Execu
  * `tokensAmountRaw` base units of `mint` via the Jupiter Swap API. Used by
  * the exit manager to close positions on take-profit, stop-loss, or max
  * hold time.
+ *
+ * `dryRun` is passed explicitly by the caller (reflecting the position's own
+ * dryRun flag, not the live `config.dryRun`) so a position opened while
+ * paper-trading always gets a simulated exit, even if the bot is later
+ * flipped to live — and a real position always gets a real exit, even if the
+ * bot is later flipped back to dry-run.
  */
 export async function executeSell(
   mint: string,
-  tokensAmountRaw: string
+  tokensAmountRaw: string,
+  dryRun: boolean = config.dryRun
 ): Promise<ExecutionResult> {
   const { quote, error: quoteError } = await getQuote(mint, SOL_MINT, tokensAmountRaw);
   if (!quote) {
-    return { dryRun: config.dryRun, mint, amountSol: 0, error: quoteError };
+    return { dryRun, mint, amountSol: 0, error: quoteError };
   }
 
   const expectedSol = Number(quote.outAmount) / 1e9;
 
-  if (config.dryRun) {
+  if (dryRun) {
     console.log(
       `[executor] DRY RUN — would sell ${tokensAmountRaw} raw units of ${mint} for ~${expectedSol.toFixed(
         6
