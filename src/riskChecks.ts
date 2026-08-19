@@ -11,6 +11,13 @@ export interface RiskCheckResult {
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
+// Fill data from the source wallet's own buy, passed through so the
+// momentum check can compare our entry price against theirs.
+export interface EntrySignalContext {
+  solSpentLamports: number;
+  tokensReceivedRaw?: string;
+}
+
 function jupiterHeaders(): Record<string, string> {
   return config.jupiterApiKey ? { 'x-api-key': config.jupiterApiKey } : {};
 }
@@ -175,21 +182,81 @@ async function checkLiquidityDepth(mint: string, solAmount: number): Promise<Ris
 }
 
 /**
+ * Compares our own entry price against the source wallet's fill price for
+ * the same mint. Copy-trading has a few seconds of unavoidable latency
+ * between the source wallet's on-chain buy and our own — on a fast-moving
+ * pump.fun token that's often enough time for the source wallet's own buy
+ * to have already spiked the price, which then mean-reverts right after we
+ * buy in. That "buying the top" pattern was traced directly to real trades
+ * that stopped out within 1-2 minutes. This check estimates how much worse
+ * our price is versus theirs and blocks the buy if it's run up too far.
+ *
+ * Skips itself (passes) rather than blocking whenever it doesn't have
+ * enough data to make the comparison — a missing signal isn't evidence of
+ * a bad entry, and this check shouldn't be a single point of failure for
+ * buys that would otherwise be fine.
+ */
+async function checkEntryMomentum(
+  mint: string,
+  positionSizeSol: number,
+  signal?: EntrySignalContext
+): Promise<RiskCheckResult> {
+  if (!signal || !signal.tokensReceivedRaw || signal.tokensReceivedRaw === '0') {
+    return { passed: true, details: { skipped: 'no source wallet fill data available' } };
+  }
+
+  const lamports = Math.floor(positionSizeSol * 1e9);
+  const { quote, error } = await getQuote(SOL_MINT, mint, lamports);
+  if (!quote) {
+    // Let checkLiquidityDepth be the check that fails the buy on a bad
+    // quote — this check only has an opinion when it has a price to compare.
+    return { passed: true, details: { skipped: `no quote available: ${error}` } };
+  }
+
+  const ourTokensRaw = Number(quote.outAmount);
+  if (!ourTokensRaw) {
+    return { passed: true, details: { skipped: 'quote returned zero tokens' } };
+  }
+
+  // Lamports spent per raw token unit received, computed the same way on
+  // both sides — decimals cancel out since it's the same mint, so this
+  // ratio is directly comparable without needing to know the token's
+  // decimal count.
+  const sourcePricePerToken = signal.solSpentLamports / Number(signal.tokensReceivedRaw);
+  const ourPricePerToken = lamports / ourTokensRaw;
+  const runUpPct = (ourPricePerToken - sourcePricePerToken) / sourcePricePerToken;
+
+  if (runUpPct > config.maxEntryRunUpPct) {
+    return {
+      passed: false,
+      reason: `price already ran up ${(runUpPct * 100).toFixed(1)}% since the source wallet's fill (max allowed ${(
+        config.maxEntryRunUpPct * 100
+      ).toFixed(0)}%) — likely chasing a spike that already happened`,
+      details: { runUpPct, sourcePricePerToken, ourPricePerToken },
+    };
+  }
+
+  return { passed: true, details: { runUpPct, sourcePricePerToken, ourPricePerToken } };
+}
+
+/**
  * Runs all pre-buy checks. Fails closed: any single failure blocks the
  * trade, and any unexpected error is treated as a failure rather than
  * silently passing.
  */
 export async function runRiskChecks(
   mint: string,
-  positionSizeSol: number
+  positionSizeSol: number,
+  signal?: EntrySignalContext
 ): Promise<{ passed: boolean; results: Record<string, RiskCheckResult> }> {
-  const [mintAuthority, sellRoute, liquidity] = await Promise.all([
+  const [mintAuthority, sellRoute, liquidity, entryMomentum] = await Promise.all([
     checkMintAuthority(mint),
     checkSellRoute(mint),
     checkLiquidityDepth(mint, positionSizeSol),
+    checkEntryMomentum(mint, positionSizeSol, signal),
   ]);
 
-  const results = { mintAuthority, sellRoute, liquidity };
+  const results = { mintAuthority, sellRoute, liquidity, entryMomentum };
   const passed = Object.values(results).every((r) => r.passed);
 
   if (!passed) {

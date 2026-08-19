@@ -7,6 +7,13 @@ export interface BuySignal {
   solSpent: number; // approx SOL amount spent by the target wallet
   signature: string;
   timestamp: number;
+  // Raw (base-unit) amount of the token the source wallet actually received,
+  // when Helius reports it. Used to derive the source wallet's effective
+  // fill price so we can tell if the price already ran up before our own
+  // buy lands (see checkEntryMomentum in riskChecks.ts). Optional because
+  // not every tx shape includes it — the momentum check skips itself
+  // cleanly when this is missing rather than blocking on data we don't have.
+  tokensReceivedRaw?: string;
 }
 
 type SignalHandler = (signal: BuySignal) => void | Promise<void>;
@@ -35,7 +42,11 @@ export function extractBuySignal(tx: any): BuySignal | null {
   if (swap) {
     const nativeInput = swap.nativeInput; // { account, amount } lamports
     const tokenOutputs = swap.tokenOutputs as
-      | Array<{ mint: string; userAccount: string }>
+      | Array<{
+          mint: string;
+          userAccount: string;
+          rawTokenAmount?: { tokenAmount: string; decimals: number };
+        }>
       | undefined;
 
     if (nativeInput && nativeInput.account === walletAddress && tokenOutputs?.length) {
@@ -48,6 +59,7 @@ export function extractBuySignal(tx: any): BuySignal | null {
           solSpent: lamports / 1e9,
           signature: tx.signature,
           timestamp: (tx.timestamp ?? Math.floor(Date.now() / 1000)) * 1000,
+          tokensReceivedRaw: out.rawTokenAmount?.tokenAmount,
         };
       }
     }
@@ -73,6 +85,11 @@ export function extractBuySignal(tx: any): BuySignal | null {
       solSpent: Number(solOut.amount) / 1e9,
       signature: tx.signature,
       timestamp: (tx.timestamp ?? Math.floor(Date.now() / 1000)) * 1000,
+      tokensReceivedRaw:
+        tokenIn.rawTokenAmount?.tokenAmount ??
+        (tokenIn.tokenAmount != null && tokenIn.decimals != null
+          ? String(Math.round(Number(tokenIn.tokenAmount) * 10 ** tokenIn.decimals))
+          : undefined),
     };
   }
 

@@ -31,10 +31,17 @@ export async function checkExits(): Promise<void> {
     const holdMs = now - pos.boughtAt;
     const holdMinutes = holdMs / 60_000;
 
+    // Early on, a thin pump.fun pool can swing well past the stop-loss
+    // threshold on pure noise (including the impact of our own entry buy)
+    // and revert seconds later. Real reversals stay down; noise doesn't —
+    // giving stop-loss a short grace period after entry filters out most of
+    // the false triggers that were closing positions within 1-2 minutes.
+    const stopLossArmed = holdMs >= config.stopLossGraceSec * 1000;
+
     let reason: string | null = null;
     if (pnlRatio >= 1 + config.takeProfitPct) {
       reason = `take-profit: +${((pnlRatio - 1) * 100).toFixed(1)}%`;
-    } else if (pnlRatio <= 1 - config.stopLossPct) {
+    } else if (stopLossArmed && pnlRatio <= 1 - config.stopLossPct) {
       reason = `stop-loss: ${((pnlRatio - 1) * 100).toFixed(1)}%`;
     } else if (holdMinutes >= config.maxHoldMinutes) {
       reason = `max hold time: ${holdMinutes.toFixed(1)} min (${((pnlRatio - 1) * 100).toFixed(1)}% at exit)`;

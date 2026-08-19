@@ -40,6 +40,19 @@ export interface Config {
   exitCheckIntervalSec: number;
   positionsStateFile: string;
   tradeLedgerFile: string;
+  // How much worse (in %) our effective entry price is allowed to be versus
+  // the source wallet's own fill price before we skip the buy. By the time
+  // our webhook fires and we get a quote, seconds have passed and the source
+  // wallet's buy may have already spiked the price — buying into that spike
+  // is "chasing the pump" and is a major driver of the quick-stop-loss
+  // pattern observed in real trades.
+  maxEntryRunUpPct: number;
+  // Seconds after entry during which stop-loss is not allowed to trigger.
+  // Prices on brand-new pump.fun pools are extremely noisy in the first
+  // seconds after any buy (including our own, which moves price on a thin
+  // pool) — without a grace period, normal early volatility gets misread as
+  // a real reversal and stops the position out almost immediately.
+  stopLossGraceSec: number;
 }
 
 function loadConfig(): Config {
@@ -108,6 +121,8 @@ function loadConfig(): Config {
     exitCheckIntervalSec: Number(process.env.EXIT_CHECK_INTERVAL_SEC ?? 30),
     positionsStateFile: process.env.POSITIONS_STATE_FILE ?? 'positions.json',
     tradeLedgerFile: process.env.TRADE_LEDGER_FILE ?? 'trades.json',
+    maxEntryRunUpPct: Number(process.env.MAX_ENTRY_RUNUP_PCT ?? 0.2),
+    stopLossGraceSec: Number(process.env.STOP_LOSS_GRACE_SEC ?? 45),
   };
 }
 

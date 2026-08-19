@@ -50,7 +50,10 @@ async function handleSignal(signal: BuySignal) {
       return;
     }
 
-    const risk = await runRiskChecks(mint, config.positionSizeSol);
+    const risk = await runRiskChecks(mint, config.positionSizeSol, {
+      solSpentLamports: Math.floor(signal.solSpent * 1e9),
+      tokensReceivedRaw: signal.tokensReceivedRaw,
+    });
     if (!risk.passed) {
       return; // runRiskChecks already logs the reason
     }
