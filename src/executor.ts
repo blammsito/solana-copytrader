@@ -1,10 +1,38 @@
-import { Connection, Keypair, VersionedTransaction } from '@solana/web3.js';
+import { Connection, Keypair, PublicKey, VersionedTransaction } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { config } from './config';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
+const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 
 const connection = new Connection(config.heliusRpcUrl, 'confirmed');
+
+/**
+ * Reads the wallet's actual current balance of `mint` directly from the
+ * chain. The amount recorded when a position was opened is only ever an
+ * estimate from the buy-time quote — real settlement can land lower (price
+ * impact between quote and execution, or a transfer tax some pump.fun tokens
+ * charge) — so selling against that stale estimate can ask for more than the
+ * wallet actually holds, which fails identically on every route. Returns
+ * null if the account can't be read (e.g. no token account exists at all).
+ */
+async function getActualTokenBalance(owner: PublicKey, mint: string): Promise<string | null> {
+  try {
+    const { value } = await connection.getParsedTokenAccountsByOwner(owner, {
+      mint: new PublicKey(mint),
+      programId: TOKEN_PROGRAM_ID,
+    });
+    if (value.length === 0) return null;
+    // Sum across accounts in the unlikely case there's more than one.
+    const total = value.reduce(
+      (sum, acc) => sum + BigInt(acc.account.data.parsed.info.tokenAmount.amount),
+      0n
+    );
+    return total.toString();
+  } catch {
+    return null;
+  }
+}
 
 function jupiterHeaders(extra?: Record<string, string>): Record<string, string> {
   return {
@@ -164,7 +192,42 @@ export async function executeSell(
   tokensAmountRaw: string,
   dryRun: boolean = config.dryRun
 ): Promise<ExecutionResult> {
-  const { quote, error: quoteError } = await getQuote(mint, SOL_MINT, tokensAmountRaw);
+  let signer: Keypair | null = null;
+  let sellAmountRaw = tokensAmountRaw;
+
+  if (!dryRun) {
+    signer = getSigner();
+    if (!signer) {
+      return {
+        dryRun: false,
+        mint,
+        amountSol: 0,
+        error: 'no WALLET_PRIVATE_KEY configured for live trading',
+      };
+    }
+
+    // The tracked amount is only ever an estimate from the buy-time quote —
+    // sell against what the wallet actually holds right now instead, so a
+    // lower real settlement (or a transfer tax) can never cause us to ask
+    // for more tokens than we have.
+    const actualBalance = await getActualTokenBalance(signer.publicKey, mint);
+    if (actualBalance === null || actualBalance === '0') {
+      return {
+        dryRun: false,
+        mint,
+        amountSol: 0,
+        error: `wallet holds no ${mint} tokens to sell right now (tracked amount was ${tokensAmountRaw}) — position may never have actually settled`,
+      };
+    }
+    if (actualBalance !== tokensAmountRaw) {
+      console.warn(
+        `[executor] tracked sell amount for ${mint} (${tokensAmountRaw}) differs from actual on-chain balance (${actualBalance}) — selling the actual balance`
+      );
+    }
+    sellAmountRaw = actualBalance;
+  }
+
+  const { quote, error: quoteError } = await getQuote(mint, SOL_MINT, sellAmountRaw);
   if (!quote) {
     return { dryRun, mint, amountSol: 0, error: quoteError };
   }
@@ -173,7 +236,7 @@ export async function executeSell(
 
   if (dryRun) {
     console.log(
-      `[executor] DRY RUN — would sell ${tokensAmountRaw} raw units of ${mint} for ~${expectedSol.toFixed(
+      `[executor] DRY RUN — would sell ${sellAmountRaw} raw units of ${mint} for ~${expectedSol.toFixed(
         6
       )} SOL.`
     );
@@ -186,17 +249,7 @@ export async function executeSell(
     };
   }
 
-  const signer = getSigner();
-  if (!signer) {
-    return {
-      dryRun: false,
-      mint,
-      amountSol: expectedSol,
-      error: 'no WALLET_PRIVATE_KEY configured for live trading',
-    };
-  }
-
-  const primaryAttempt = await performSwap(quote, signer);
+  const primaryAttempt = await performSwap(quote, signer!);
   if (!primaryAttempt.error) {
     console.log(`[executor] LIVE sell executed: ${primaryAttempt.signature}`);
     return {
@@ -225,7 +278,7 @@ export async function executeSell(
   console.warn(
     `[executor] sell via Pump.fun Amm route failed (${primaryAttempt.error}) — retrying with that venue excluded`
   );
-  const fallback = await getQuote(mint, SOL_MINT, tokensAmountRaw, 'Pump.fun Amm');
+  const fallback = await getQuote(mint, SOL_MINT, sellAmountRaw, 'Pump.fun Amm');
   if (!fallback.quote) {
     return {
       dryRun: false,
@@ -236,7 +289,7 @@ export async function executeSell(
   }
 
   const fallbackExpectedSol = Number(fallback.quote.outAmount) / 1e9;
-  const fallbackAttempt = await performSwap(fallback.quote, signer);
+  const fallbackAttempt = await performSwap(fallback.quote, signer!);
   if (fallbackAttempt.error) {
     return {
       dryRun: false,
