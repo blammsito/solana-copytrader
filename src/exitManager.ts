@@ -114,6 +114,7 @@ export async function checkExits(): Promise<void> {
       buySignature: pos.buySignature,
       sellSignature: sellResult.signature,
       dryRun: sellResult.dryRun,
+      conviction: pos.conviction,
     });
 
     removePosition(pos.mint);

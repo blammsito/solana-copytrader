@@ -29,6 +29,20 @@ export interface Position {
   // restarted between a swap landing on-chain and this file being updated
   // to remove it — and can never be sold again. See recordNoBalanceStrike.
   noBalanceStreak?: number;
+  // Snapshot of the conviction score that sized this buy (see conviction.ts),
+  // carried through to the closed trade record on exit. This is what lets
+  // convictionReport.ts empirically check whether the score actually
+  // predicts outcomes, instead of the thresholds just being permanent
+  // guesses. Optional — positions opened before this field existed, or from
+  // a signal source with no conviction data, won't have it.
+  conviction?: {
+    score: number;
+    momentum: number;
+    holderHealth: number;
+    washHealth: number;
+    creatorPct: number | null;
+    top10Pct: number | null;
+  };
 }
 
 interface PositionsState {

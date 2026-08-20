@@ -104,6 +104,14 @@ async function handleSignal(signal: BuySignal) {
         boughtAt: Date.now(),
         buySignature: result.signature,
         dryRun: result.dryRun,
+        conviction: {
+          score: conviction.score,
+          momentum: conviction.breakdown.momentum,
+          holderHealth: conviction.breakdown.holderHealth,
+          washHealth: conviction.breakdown.washHealth,
+          creatorPct: conviction.breakdown.creatorPct,
+          top10Pct: conviction.breakdown.top10Pct,
+        },
       });
     } else {
       console.warn(

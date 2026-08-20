@@ -16,6 +16,18 @@ export interface ClosedTrade {
   buySignature?: string;
   sellSignature?: string;
   dryRun: boolean;
+  // Carried over from Position.conviction (see positionTracker.ts) — the
+  // conviction score/breakdown that sized this trade at entry, so
+  // convictionReport.ts can check whether it actually predicted the
+  // outcome. Optional for the same reason it's optional on Position.
+  conviction?: {
+    score: number;
+    momentum: number;
+    holderHealth: number;
+    washHealth: number;
+    creatorPct: number | null;
+    top10Pct: number | null;
+  };
 }
 
 interface LedgerState {
