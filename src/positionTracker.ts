@@ -20,6 +20,15 @@ export interface Position {
   // fired at it the moment the bot is flipped live, for a token the wallet
   // never actually holds.
   dryRun: boolean;
+  // Consecutive exit-check cycles in a row where a sell attempt failed
+  // because the wallet's on-chain balance for this mint was confirmed empty
+  // (checked directly against the chain) despite this position still being
+  // tracked as open. A single empty reading can be transient indexer lag;
+  // several in a row is strong evidence the position was already sold and
+  // closed outside the normal flow — most likely the process crashed or
+  // restarted between a swap landing on-chain and this file being updated
+  // to remove it — and can never be sold again. See recordNoBalanceStrike.
+  noBalanceStreak?: number;
 }
 
 interface PositionsState {
@@ -71,4 +80,24 @@ export function removePosition(mint: string) {
   const state = loadState();
   state.positions = state.positions.filter((p) => p.mint !== mint);
   saveState(state);
+}
+
+/**
+ * Records one more consecutive "confirmed zero on-chain balance" reading for
+ * a tracked position and returns the updated streak count. Called by
+ * exitManager when a sell attempt fails specifically because the wallet
+ * genuinely holds none of the mint right now — as opposed to a quote
+ * failure, slippage revert, or other ordinary retry-worthy error.
+ *
+ * Persisted to disk (not kept in memory) so the streak survives process
+ * restarts — otherwise a crash-loop could reset the counter every time and
+ * a position that's actually gone forever would never get reconciled.
+ */
+export function recordNoBalanceStrike(mint: string): number {
+  const state = loadState();
+  const pos = state.positions.find((p) => p.mint === mint);
+  if (!pos) return 0;
+  pos.noBalanceStreak = (pos.noBalanceStreak ?? 0) + 1;
+  saveState(state);
+  return pos.noBalanceStreak;
 }

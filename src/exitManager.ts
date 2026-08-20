@@ -1,7 +1,19 @@
 import { config } from './config';
-import { getOpenPositions, removePosition } from './positionTracker';
+import { getOpenPositions, removePosition, recordNoBalanceStrike } from './positionTracker';
 import { executeSell } from './executor';
 import { recordClosedTrade } from './tradeLedger';
+
+// How many consecutive exit-check cycles a position must show a confirmed
+// zero on-chain balance before we give up trying to sell it and drop it
+// from tracking. A single empty reading can be transient indexer lag; this
+// many in a row (roughly RECONCILE_AFTER_STRIKES * exitCheckIntervalSec) is
+// treated as proof the position was already sold and closed outside the
+// normal flow and can never be sold again.
+const RECONCILE_AFTER_STRIKES = 5;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /**
  * Checks every open position and sells it if any exit condition is met:
@@ -19,7 +31,10 @@ export async function checkExits(): Promise<void> {
 
   const now = Date.now();
 
-  for (const pos of positions) {
+  for (let i = 0; i < positions.length; i++) {
+    const pos = positions[i];
+    if (i > 0) await sleep(config.exitCheckStaggerMs);
+
     const result = await previewSellValue(pos.mint, pos.tokensAmountRaw);
 
     if (result === null) {
@@ -56,7 +71,27 @@ export async function checkExits(): Promise<void> {
 
     const sellResult = await executeSell(pos.mint, pos.tokensAmountRaw, pos.dryRun);
     if (sellResult.error) {
-      console.error(`[exitManager] sell failed for ${pos.mint}: ${sellResult.error} — will retry next cycle`);
+      if (sellResult.confirmedEmpty) {
+        const streak = recordNoBalanceStrike(pos.mint);
+        if (streak >= RECONCILE_AFTER_STRIKES) {
+          console.warn(
+            `[exitManager] ${pos.mint} has shown a confirmed zero on-chain balance for ${streak} consecutive ` +
+              `checks — treating this as already sold/closed outside the normal flow (most likely the process ` +
+              `was interrupted between a swap landing on-chain and this position being removed from tracking) ` +
+              `and dropping it now to stop retrying an exit that can never succeed. This trade's P&L was NOT ` +
+              `recorded automatically — check trades.json or on-chain history for the real sell signature if ` +
+              `you need exact numbers.`
+          );
+          removePosition(pos.mint);
+        } else {
+          console.warn(
+            `[exitManager] ${pos.mint} shows a confirmed zero on-chain balance (${streak}/${RECONCILE_AFTER_STRIKES} ` +
+              `consecutive checks) — will reconcile and drop tracking if this persists`
+          );
+        }
+      } else {
+        console.error(`[exitManager] sell failed for ${pos.mint}: ${sellResult.error} — will retry next cycle`);
+      }
       continue;
     }
 
@@ -108,8 +143,25 @@ async function previewSellValue(mint: string, tokensAmountRaw: string): Promise<
 }
 
 export function startExitMonitor(): void {
+  // setInterval doesn't wait for the previous callback to finish — with
+  // several positions, each needing multiple Jupiter/RPC round trips, a
+  // cycle can run longer than exitCheckIntervalSec. Without this guard the
+  // next tick fires anyway and a second checkExits() runs concurrently
+  // against its own stale snapshot of positions.json, which is exactly the
+  // kind of overlap that can leave a position's file record out of sync
+  // with what actually happened on-chain.
+  let running = false;
   setInterval(() => {
-    checkExits().catch((err) => console.error('[exitManager] error during exit check', err));
+    if (running) {
+      console.warn('[exitManager] previous exit check still in progress — skipping this tick');
+      return;
+    }
+    running = true;
+    checkExits()
+      .catch((err) => console.error('[exitManager] error during exit check', err))
+      .finally(() => {
+        running = false;
+      });
   }, config.exitCheckIntervalSec * 1000);
 
   console.log(

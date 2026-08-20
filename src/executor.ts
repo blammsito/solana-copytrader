@@ -92,20 +92,23 @@ async function getBalanceViaDAS(owner: PublicKey, mint: string): Promise<string 
  * charge) — so selling against that stale estimate can ask for more than the
  * wallet actually holds, which fails identically on every route.
  *
- * Queries the direct RPC method and Helius's DAS API in parallel and prefers
- * the RPC result when it finds an account; falls back to DAS when RPC comes
- * back empty, which rescues real positions during the RPC's periodic
- * Token-2022 flakiness instead of permanently reporting them as unsellable.
- * Returns null only when both sources find nothing.
+ * Tries the direct RPC method first and only falls back to Helius's DAS API
+ * when RPC comes back empty — this rescues real positions during the RPC's
+ * periodic Token-2022 flakiness instead of permanently reporting them as
+ * unsellable. Deliberately sequential rather than firing both in parallel:
+ * both calls hit the same Helius endpoint/API key, and with many open
+ * positions checked every cycle the doubled request volume was a real
+ * contributor to hitting Helius's rate limit (429s) in production. Since
+ * RPC finds the account the overwhelming majority of the time, this halves
+ * Helius load for the common case and only pays for the DAS call when it's
+ * actually needed. Returns null only when both sources find nothing.
  */
 async function getActualTokenBalance(owner: PublicKey, mint: string): Promise<string | null> {
   const mintKey = new PublicKey(mint);
-  const [rpcBalance, dasBalance] = await Promise.all([
-    getBalanceViaRpc(owner, mintKey),
-    getBalanceViaDAS(owner, mint),
-  ]);
-
+  const rpcBalance = await getBalanceViaRpc(owner, mintKey);
   if (rpcBalance !== null) return rpcBalance;
+
+  const dasBalance = await getBalanceViaDAS(owner, mint);
   if (dasBalance !== null) {
     console.warn(
       `[executor] getParsedTokenAccountsByOwner found no account for ${mint} but DAS reports a balance — using DAS result (${dasBalance})`
@@ -138,6 +141,13 @@ export interface ExecutionResult {
   // of SOL received. Used by callers to track/close positions.
   outAmountRaw?: string;
   error?: string;
+  // Set when a sell failed specifically because a direct on-chain balance
+  // check found the wallet holds none of this mint right now, as opposed to
+  // a quote failure, slippage revert, or other transient error. This is the
+  // signal exitManager uses to eventually reconcile (drop) a position that
+  // was actually already sold and closed — retrying can never succeed here,
+  // unlike other error types where retrying next cycle is the right move.
+  confirmedEmpty?: boolean;
 }
 
 async function getQuote(
@@ -297,7 +307,8 @@ export async function executeSell(
         dryRun: false,
         mint,
         amountSol: 0,
-        error: `wallet holds no ${mint} tokens to sell right now (tracked amount was ${tokensAmountRaw}) — position may never have actually settled`,
+        error: `wallet holds no ${mint} tokens to sell right now (tracked amount was ${tokensAmountRaw}) — position may never have actually settled, or was already sold and closed before tracking could be updated`,
+        confirmedEmpty: true,
       };
     }
     if (actualBalance !== tokensAmountRaw) {

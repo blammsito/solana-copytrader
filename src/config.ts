@@ -53,6 +53,16 @@ export interface Config {
   // pool) — without a grace period, normal early volatility gets misread as
   // a real reversal and stops the position out almost immediately.
   stopLossGraceSec: number;
+  // Milliseconds to wait between processing each position in an exit-check
+  // cycle. Each position costs at least one Jupiter quote call, plus (when
+  // an exit condition is hit) Helius RPC balance checks and a swap. With
+  // enough open positions, firing all of that back-to-back in one tick was
+  // enough to trip Jupiter's/Helius's rate limits in production, causing
+  // 429s and "could not price" skips — including on live positions that
+  // genuinely needed a stop-loss to fire. Spreading requests out over the
+  // cycle trades a little exit-reaction latency for actually getting an
+  // answer instead of a rate-limit error.
+  exitCheckStaggerMs: number;
 }
 
 function loadConfig(): Config {
@@ -123,6 +133,7 @@ function loadConfig(): Config {
     tradeLedgerFile: process.env.TRADE_LEDGER_FILE ?? 'trades.json',
     maxEntryRunUpPct: Number(process.env.MAX_ENTRY_RUNUP_PCT ?? 0.2),
     stopLossGraceSec: Number(process.env.STOP_LOSS_GRACE_SEC ?? 45),
+    exitCheckStaggerMs: Number(process.env.EXIT_CHECK_STAGGER_MS ?? 400),
   };
 }
 
