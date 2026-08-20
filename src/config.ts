@@ -44,6 +44,25 @@ export interface Config {
   exitCheckIntervalSec: number;
   positionsStateFile: string;
   tradeLedgerFile: string;
+  // ==== Smarter exits: trailing stop + partial scale-out ====
+  // Once a position's profit reaches this ratio, the fixed STOP_LOSS_PCT
+  // stops applying and a trailing stop takes over instead — the goal is to
+  // stop giving back an entire winning move to the same noise the fixed
+  // stop-loss has to tolerate on the way up. 0.2 = arms once +20% in profit.
+  trailingStopArmPct: number;
+  // How far (as a ratio) price is allowed to pull back from its peak, once
+  // the trailing stop is armed, before it exits. Trails the peak upward as
+  // new highs are made; never re-tightens on a pullback that doesn't exit.
+  trailingStopPct: number;
+  // Profit ratio at which a partial scale-out fires: sell PARTIAL_SCALE_OUT_FRACTION
+  // of the position once, bank that profit for real, and let the remainder
+  // ride under a breakeven-or-better floor plus the trailing stop above.
+  // Set to 0 (or PARTIAL_SCALE_OUT_FRACTION to 0) to disable.
+  partialTakeProfitPct: number;
+  // Fraction of the position sold at the partial take-profit trigger (e.g.
+  // 0.5 = sell half). The remainder keeps its own reduced cost basis and is
+  // marked scaledOut so this can only fire once per position.
+  partialScaleOutFraction: number;
   // How much worse (in %) our effective entry price is allowed to be versus
   // the source wallet's own fill price before we skip the buy. By the time
   // our webhook fires and we get a quote, seconds have passed and the source
@@ -178,6 +197,10 @@ function loadConfig(): Config {
     exitCheckIntervalSec: Number(process.env.EXIT_CHECK_INTERVAL_SEC ?? 30),
     positionsStateFile: process.env.POSITIONS_STATE_FILE ?? 'positions.json',
     tradeLedgerFile: process.env.TRADE_LEDGER_FILE ?? 'trades.json',
+    trailingStopArmPct: Number(process.env.TRAILING_STOP_ARM_PCT ?? 0.2),
+    trailingStopPct: Number(process.env.TRAILING_STOP_PCT ?? 0.15),
+    partialTakeProfitPct: Number(process.env.PARTIAL_TAKE_PROFIT_PCT ?? 0.3),
+    partialScaleOutFraction: Number(process.env.PARTIAL_SCALE_OUT_FRACTION ?? 0.5),
     maxEntryRunUpPct: Number(process.env.MAX_ENTRY_RUNUP_PCT ?? 0.2),
     stopLossGraceSec: Number(process.env.STOP_LOSS_GRACE_SEC ?? 45),
     exitCheckStaggerMs: Number(process.env.EXIT_CHECK_STAGGER_MS ?? 400),

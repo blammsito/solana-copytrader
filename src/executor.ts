@@ -354,11 +354,25 @@ export async function executeBuy(mint: string, amountSol: number): Promise<Execu
  * paper-trading always gets a simulated exit, even if the bot is later
  * flipped to live — and a real position always gets a real exit, even if the
  * bot is later flipped back to dry-run.
+ *
+ * By default this sells the wallet's *entire* actual on-chain balance of
+ * `mint`, ignoring `tokensAmountRaw` as anything more than a sanity check —
+ * appropriate for a full position close, where the tracked amount is only
+ * ever an estimate and we want to guarantee nothing gets left behind.
+ *
+ * Pass `opts.exactAmount: true` for a partial sell (see exitManager.ts's
+ * scale-out logic): this sells exactly `tokensAmountRaw` (capped to the
+ * live balance if it's somehow lower) instead of overriding it with the
+ * full balance, and skips the PumpPortal "sell 100%" last-resort fallback
+ * entirely, since that fallback has no way to express "sell only part of
+ * my holdings" and using it here would liquidate the whole position by
+ * accident.
  */
 export async function executeSell(
   mint: string,
   tokensAmountRaw: string,
-  dryRun: boolean = config.dryRun
+  dryRun: boolean = config.dryRun,
+  opts: { exactAmount?: boolean } = {}
 ): Promise<ExecutionResult> {
   let signer: Keypair | null = null;
   let sellAmountRaw = tokensAmountRaw;
@@ -388,12 +402,22 @@ export async function executeSell(
         confirmedEmpty: true,
       };
     }
-    if (actualBalance !== tokensAmountRaw) {
-      console.warn(
-        `[executor] tracked sell amount for ${mint} (${tokensAmountRaw}) differs from actual on-chain balance (${actualBalance}) — selling the actual balance`
-      );
+
+    if (opts.exactAmount) {
+      // Partial sell: sell exactly what was requested, never more — cap to
+      // the live balance only if it's somehow lower than requested (e.g. a
+      // transfer tax shaved a bit off since the position was opened).
+      const requested = BigInt(tokensAmountRaw);
+      const available = BigInt(actualBalance);
+      sellAmountRaw = (requested > available ? available : requested).toString();
+    } else {
+      if (actualBalance !== tokensAmountRaw) {
+        console.warn(
+          `[executor] tracked sell amount for ${mint} (${tokensAmountRaw}) differs from actual on-chain balance (${actualBalance}) — selling the actual balance`
+        );
+      }
+      sellAmountRaw = actualBalance;
     }
-    sellAmountRaw = actualBalance;
   }
 
   const { quote, error: quoteError } = await getQuote(mint, SOL_MINT, sellAmountRaw);
@@ -544,6 +568,23 @@ export async function executeSell(
   // site before this fallback existed. PumpPortal's trade-local API builds
   // that transaction directly instead of going through Jupiter at all — a
   // real chance of landing where every attempt above reverted identically.
+  //
+  // Skipped entirely for a partial (exactAmount) sell: PumpPortal's
+  // trade-local API only exposes "sell 100%" or a specific token amount for
+  // sells, and this fallback deliberately uses "100%" to dodge stale-amount
+  // mismatches — firing it here would sell the whole position instead of
+  // just the requested slice, which is exactly the outcome a scale-out is
+  // trying to avoid. A partial sell that can't land via Jupiter just fails
+  // for this cycle and exitManager tries again next cycle instead.
+  if (opts.exactAmount) {
+    return {
+      dryRun: false,
+      mint,
+      amountSol: expectedSol,
+      error: lastError,
+    };
+  }
+
   console.warn(`[executor] all Jupiter-routed sells for ${mint} failed (${lastError}) — trying PumpPortal directly as a last resort`);
   const pumpPortalAttempt = await performPumpPortalSell(mint, signer!);
   if (!pumpPortalAttempt.error) {

@@ -1,5 +1,11 @@
 import { config } from './config';
-import { getOpenPositions, removePosition, recordNoBalanceStrike } from './positionTracker';
+import {
+  getOpenPositions,
+  removePosition,
+  recordNoBalanceStrike,
+  updatePosition,
+  Position,
+} from './positionTracker';
 import { executeSell } from './executor';
 import { recordClosedTrade } from './tradeLedger';
 import { notifySell } from './notify';
@@ -17,10 +23,120 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Splits a raw (base-unit) token amount by a fraction using BigInt math
+ * throughout, so large raw amounts never lose precision the way a
+ * Number-based multiply/divide could. Rounds down (floor) on the sold
+ * portion so a scale-out can never accidentally request more than the
+ * position actually holds.
+ */
+function fractionOfRaw(raw: string, fraction: number): string {
+  const total = BigInt(raw);
+  const bpsFraction = BigInt(Math.round(fraction * 10_000));
+  return ((total * bpsFraction) / 10_000n).toString();
+}
+
+/**
+ * Sells `config.partialScaleOutFraction` of a position once it first
+ * reaches `config.partialTakeProfitPct` profit, banking that portion's
+ * profit for real instead of leaving the whole position exposed to a
+ * reversal while waiting for a bigger move. Records the partial sell as its
+ * own closed-trade ledger entry (proportional share of the entry cost) and
+ * shrinks the tracked position down to what's left, marking it `scaledOut`
+ * so this can only fire once. On failure, logs and returns false — the full
+ * position stays intact and every exit check (including a full close) is
+ * still evaluated normally next cycle.
+ */
+async function attemptPartialScaleOut(pos: Position, now: number, pnlRatio: number): Promise<boolean> {
+  const sellRaw = fractionOfRaw(pos.tokensAmountRaw, config.partialScaleOutFraction);
+  if (sellRaw === '0' || BigInt(sellRaw) >= BigInt(pos.tokensAmountRaw)) return false;
+
+  console.log(
+    `[exitManager] SCALING OUT ${pos.mint}${pos.dryRun ? ' (dry run position)' : ''} — ` +
+      `partial take-profit +${((pnlRatio - 1) * 100).toFixed(1)}%, selling ` +
+      `${(config.partialScaleOutFraction * 100).toFixed(0)}% of the position`
+  );
+
+  const sellResult = await executeSell(pos.mint, sellRaw, pos.dryRun, { exactAmount: true });
+  if (sellResult.error) {
+    console.warn(`[exitManager] partial scale-out for ${pos.mint} failed (${sellResult.error}) — will try again next cycle`);
+    return false;
+  }
+
+  const remainingRaw = (BigInt(pos.tokensAmountRaw) - BigInt(sellRaw)).toString();
+  const soldFraction = Number(sellRaw) / Number(pos.tokensAmountRaw);
+  const entryPortion = pos.entrySolSpent * soldFraction;
+  const remainingEntry = pos.entrySolSpent - entryPortion;
+
+  const exitSolReceived = sellResult.amountSol;
+  const pnlSol = exitSolReceived - entryPortion;
+  const pnlPct = entryPortion > 0 ? (exitSolReceived / entryPortion - 1) * 100 : 0;
+  const exitReason = `partial take-profit: scaled out ${(config.partialScaleOutFraction * 100).toFixed(0)}% at +${(
+    (pnlRatio - 1) *
+    100
+  ).toFixed(1)}%`;
+
+  recordClosedTrade({
+    mint: pos.mint,
+    sourceWallet: pos.sourceWallet,
+    entrySolSpent: entryPortion,
+    exitSolReceived,
+    pnlSol,
+    pnlPct,
+    exitReason,
+    boughtAt: pos.boughtAt,
+    soldAt: now,
+    holdMinutes: (now - pos.boughtAt) / 60_000,
+    buySignature: pos.buySignature,
+    sellSignature: sellResult.signature,
+    dryRun: sellResult.dryRun,
+    conviction: pos.conviction,
+  });
+
+  updatePosition(pos.mint, {
+    tokensAmountRaw: remainingRaw,
+    entrySolSpent: remainingEntry,
+    scaledOut: true,
+    // Reset the trailing-stop peak against the runner's new (smaller) cost
+    // basis rather than carrying over a peak computed against the old one.
+    peakPnlRatio: 1,
+  });
+
+  console.log(
+    `[exitManager] scaled out ${pos.mint}${sellResult.dryRun ? ' (dry run)' : ` — sig ${sellResult.signature}`} — ` +
+      `realized ${pnlSol >= 0 ? '+' : ''}${pnlSol.toFixed(4)} SOL on the partial (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(
+        1
+      )}%), letting the remaining ${((1 - config.partialScaleOutFraction) * 100).toFixed(0)}% ride with a breakeven-or-better floor`
+  );
+
+  notifySell({
+    mint: pos.mint,
+    pnlSol,
+    pnlPct,
+    exitReason,
+    signature: sellResult.signature,
+    dryRun: sellResult.dryRun,
+  });
+
+  return true;
+}
+
+/**
  * Checks every open position and sells it if any exit condition is met:
- *   - take-profit: current value >= entry cost * (1 + TAKE_PROFIT_PCT)
- *   - stop-loss:   current value <= entry cost * (1 - STOP_LOSS_PCT)
- *   - max hold:    position has been open longer than MAX_HOLD_MINUTES
+ *   - take-profit:    current value >= entry cost * (1 + TAKE_PROFIT_PCT)
+ *   - partial scale-out: banks PARTIAL_SCALE_OUT_FRACTION of the position at
+ *     PARTIAL_TAKE_PROFIT_PCT profit; the remainder stays open (see
+ *     attemptPartialScaleOut above) rather than fully exiting.
+ *   - trailing stop:  once profit has ever reached TRAILING_STOP_ARM_PCT,
+ *     the fixed stop-loss stops applying and this fires instead if value
+ *     falls back more than TRAILING_STOP_PCT from its peak-ever value.
+ *   - stop-loss:      current value <= entry cost * (1 - STOP_LOSS_PCT) —
+ *     only while the trailing stop hasn't armed yet.
+ *   - max hold:       position has been open longer than MAX_HOLD_MINUTES
+ *
+ * A position that's already been partially scaled out never uses the fixed
+ * stop-loss again — its floor becomes breakeven (or the trailing stop, if
+ * that's armed and higher), since the sold portion already locked in real
+ * profit and the point of a runner is to not give that back.
  *
  * "Current value" is computed by asking Jupiter for a real sell quote of the
  * exact held amount, so it already reflects slippage/price impact rather
@@ -54,11 +170,52 @@ export async function checkExits(): Promise<void> {
     // the false triggers that were closing positions within 1-2 minutes.
     const stopLossArmed = holdMs >= config.stopLossGraceSec * 1000;
 
+    // Track the best mark-to-market this position has ever shown, persisted
+    // so a trailing stop has a real peak to trail behind even across
+    // restarts. Never decreases on its own — only a scale-out resets it,
+    // since that changes the cost basis the ratio is computed against.
+    const peakPnlRatio = Math.max(pos.peakPnlRatio ?? 1, pnlRatio);
+    if (peakPnlRatio !== pos.peakPnlRatio) {
+      updatePosition(pos.mint, { peakPnlRatio });
+    }
+
+    // Bank part of the profit once the first target is hit, instead of an
+    // all-or-nothing exit. Only evaluated once per position (scaledOut
+    // guards re-triggering) and only when configured.
+    if (
+      !pos.scaledOut &&
+      config.partialScaleOutFraction > 0 &&
+      config.partialTakeProfitPct > 0 &&
+      pnlRatio >= 1 + config.partialTakeProfitPct
+    ) {
+      const scaled = await attemptPartialScaleOut(pos, now, pnlRatio);
+      if (scaled) continue; // re-price the smaller remaining position next cycle
+    }
+
+    const trailingArmed = peakPnlRatio >= 1 + config.trailingStopArmPct;
+    const trailingFloor = trailingArmed ? peakPnlRatio * (1 - config.trailingStopPct) : null;
+
+    let floorRatio: number | null = null;
+    let floorLabel = '';
+    if (pos.scaledOut) {
+      // Already banked real profit on the sold portion — never let the
+      // remaining runner close below its own breakeven, but still let a
+      // trailing stop lock in more if it ran further from here.
+      floorRatio = trailingFloor !== null ? Math.max(1, trailingFloor) : 1;
+      floorLabel = trailingFloor !== null && trailingFloor > 1 ? 'trailing stop (runner)' : 'breakeven floor (runner)';
+    } else if (trailingArmed) {
+      floorRatio = trailingFloor;
+      floorLabel = 'trailing stop';
+    } else if (stopLossArmed) {
+      floorRatio = 1 - config.stopLossPct;
+      floorLabel = 'stop-loss';
+    }
+
     let reason: string | null = null;
     if (pnlRatio >= 1 + config.takeProfitPct) {
       reason = `take-profit: +${((pnlRatio - 1) * 100).toFixed(1)}%`;
-    } else if (stopLossArmed && pnlRatio <= 1 - config.stopLossPct) {
-      reason = `stop-loss: ${((pnlRatio - 1) * 100).toFixed(1)}%`;
+    } else if (floorRatio !== null && pnlRatio <= floorRatio) {
+      reason = `${floorLabel}: ${((pnlRatio - 1) * 100).toFixed(1)}% (peak was +${((peakPnlRatio - 1) * 100).toFixed(1)}%)`;
     } else if (holdMinutes >= config.maxHoldMinutes) {
       reason = `max hold time: ${holdMinutes.toFixed(1)} min (${((pnlRatio - 1) * 100).toFixed(1)}% at exit)`;
     }
@@ -175,10 +332,17 @@ export function startExitMonitor(): void {
       });
   }, config.exitCheckIntervalSec * 1000);
 
+  const scaleOutNote =
+    config.partialScaleOutFraction > 0 && config.partialTakeProfitPct > 0
+      ? `, scale out ${(config.partialScaleOutFraction * 100).toFixed(0)}% at +${(
+          config.partialTakeProfitPct * 100
+        ).toFixed(0)}%`
+      : '';
   console.log(
     `[exitManager] monitoring open positions every ${config.exitCheckIntervalSec}s ` +
       `(take-profit +${(config.takeProfitPct * 100).toFixed(0)}%, ` +
-      `stop-loss -${(config.stopLossPct * 100).toFixed(0)}%, ` +
+      `stop-loss -${(config.stopLossPct * 100).toFixed(0)}% until +${(config.trailingStopArmPct * 100).toFixed(0)}% ` +
+      `then trailing -${(config.trailingStopPct * 100).toFixed(0)}% from peak${scaleOutNote}, ` +
       `max hold ${config.maxHoldMinutes} min)`
   );
 }

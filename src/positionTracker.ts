@@ -43,6 +43,16 @@ export interface Position {
     creatorPct: number | null;
     top10Pct: number | null;
   };
+  // Best pnlRatio (currentValue / entrySolSpent) ever observed for this
+  // position, persisted so a trailing stop has a peak to trail behind that
+  // survives process restarts. 1 = breakeven; undefined is treated as 1 (no
+  // peak recorded yet). Reset to 1 after a partial scale-out since the
+  // remaining runner's cost basis changes at that point.
+  peakPnlRatio?: number;
+  // Set once a partial scale-out has sold part of this position (see
+  // exitManager.ts). Prevents scaling out twice and switches the remaining
+  // runner's downside floor from the fixed stop-loss to breakeven-or-better.
+  scaledOut?: boolean;
 }
 
 interface PositionsState {
@@ -93,6 +103,20 @@ export function addPosition(position: Position) {
 export function removePosition(mint: string) {
   const state = loadState();
   state.positions = state.positions.filter((p) => p.mint !== mint);
+  saveState(state);
+}
+
+/**
+ * Merges `patch` into a tracked position's stored fields — used by
+ * exitManager.ts to persist the running peak pnlRatio (for the trailing
+ * stop) and to shrink a position down to its remaining size/cost-basis
+ * after a partial scale-out. No-op if the mint isn't currently tracked.
+ */
+export function updatePosition(mint: string, patch: Partial<Position>) {
+  const state = loadState();
+  const pos = state.positions.find((p) => p.mint === mint);
+  if (!pos) return;
+  Object.assign(pos, patch);
   saveState(state);
 }
 
