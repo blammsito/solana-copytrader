@@ -154,11 +154,13 @@ async function getQuote(
   inputMint: string,
   outputMint: string,
   amountRaw: string | number,
-  excludeDexes?: string
+  excludeDexes?: string,
+  slippageBpsOverride?: number
 ): Promise<{ quote: any; error?: string }> {
+  const slippageBps = slippageBpsOverride ?? config.maxSlippageBps;
   const url =
     `${config.jupiterApiUrl}/quote?inputMint=${inputMint}&outputMint=${outputMint}` +
-    `&amount=${amountRaw}&slippageBps=${config.maxSlippageBps}` +
+    `&amount=${amountRaw}&slippageBps=${slippageBps}` +
     (excludeDexes ? `&excludeDexes=${encodeURIComponent(excludeDexes)}` : '');
   try {
     const res = await fetch(url, { headers: jupiterHeaders() });
@@ -351,6 +353,42 @@ export async function executeSell(
       signature: primaryAttempt.signature,
       outAmountRaw: quote.outAmount,
     };
+  }
+
+  // A failure whose message mentions the on-chain slippage-tolerance error
+  // (Solana custom program error 0x1788, seen from both pump.fun's bonding
+  // curve and its Amm) almost always means the price moved between quote and
+  // landing more than our slippage cap allows — extremely common on a token
+  // that's already crashed 50%+ (exactly the tokens a stop-loss is trying to
+  // exit). Excluding the venue entirely (below) doesn't help here: for a
+  // pump.fun-native token that hasn't migrated to a real AMM yet, pump.fun IS
+  // the only liquidity, so excluding it just makes every subsequent quote
+  // fail outright and the position gets stuck retrying forever. Retrying the
+  // *same* route with much wider slippage first gives it a real chance to
+  // exit — on a stop-loss, getting out matters more than the exact price.
+  const looksLikeSlippageRevert = /0x1788|slippage/i.test(primaryAttempt.error ?? '');
+  if (looksLikeSlippageRevert) {
+    const widerSlippageBps = Math.max(config.maxSlippageBps * 5, 2000); // at least 20%
+    console.warn(
+      `[executor] sell for ${mint} failed with what looks like a slippage-tolerance revert ` +
+        `(${primaryAttempt.error}) — retrying the same route with wider slippage (${widerSlippageBps}bps)`
+    );
+    const wider = await getQuote(mint, SOL_MINT, sellAmountRaw, undefined, widerSlippageBps);
+    if (wider.quote) {
+      const widerExpectedSol = Number(wider.quote.outAmount) / 1e9;
+      const widerAttempt = await performSwap(wider.quote, signer!);
+      if (!widerAttempt.error) {
+        console.log(`[executor] LIVE sell executed via wider-slippage retry: ${widerAttempt.signature}`);
+        return {
+          dryRun: false,
+          mint,
+          amountSol: widerExpectedSol,
+          signature: widerAttempt.signature,
+          outAmountRaw: wider.quote.outAmount,
+        };
+      }
+      console.warn(`[executor] wider-slippage retry for ${mint} also failed (${widerAttempt.error})`);
+    }
   }
 
   // Jupiter's router has a known issue building valid sell transactions
