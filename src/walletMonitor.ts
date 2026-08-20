@@ -14,6 +14,19 @@ export interface BuySignal {
   // not every tx shape includes it — the momentum check skips itself
   // cleanly when this is missing rather than blocking on data we don't have.
   tokensReceivedRaw?: string;
+  // ==== Populated by launchMonitor.ts only — used by conviction.ts to
+  // score the entry and size the position. Left undefined for signals from
+  // other sources (e.g. a future re-enabled wallet-copy path), which fall
+  // back to a neutral/minimum-size conviction treatment. ====
+  momentum?: {
+    buyCount: number;
+    volumeSol: number;
+    uniqueBuyers: number;
+    // Fraction (0-1) of buy volume in the momentum window that came from
+    // wallets which also sold within the same window — see
+    // maxRoundTripVolumeSharePct in config.ts.
+    roundTripVolumeShare: number;
+  };
 }
 
 type SignalHandler = (signal: BuySignal) => void | Promise<void>;

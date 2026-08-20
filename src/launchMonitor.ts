@@ -6,6 +6,12 @@ type SignalHandler = (signal: BuySignal) => void | Promise<void>;
 
 const WS_URL = `wss://pumpportal.fun/api/data?api-key=${config.pumpPortalApiKey}`;
 
+interface WalletActivity {
+  buys: number;
+  sells: number;
+  buyVolumeSol: number;
+}
+
 interface Candidate {
   mint: string;
   creator: string;
@@ -14,6 +20,10 @@ interface Candidate {
   volumeSol: number;
   triggered: boolean;
   windowTimer: ReturnType<typeof setTimeout>;
+  // Per-wallet buy/sell activity within the window, keyed by trader
+  // pubkey — used at trigger time to compute unique buyer count and the
+  // round-trip (buy-then-sell-same-wallet) wash-trading signal.
+  wallets: Map<string, WalletActivity>;
 }
 
 /**
@@ -61,8 +71,18 @@ export function startLaunchMonitor(onSignal: SignalHandler) {
     send({ method: 'unsubscribeTokenTrade', keys: [c.mint] });
 
     const elapsedSec = (Date.now() - c.launchedAt) / 1000;
+
+    let uniqueBuyers = 0;
+    let roundTripVolumeSol = 0;
+    for (const activity of c.wallets.values()) {
+      if (activity.buys > 0) uniqueBuyers += 1;
+      if (activity.buys > 0 && activity.sells > 0) roundTripVolumeSol += activity.buyVolumeSol;
+    }
+    const roundTripVolumeShare = c.volumeSol > 0 ? roundTripVolumeSol / c.volumeSol : 0;
+
     console.log(
-      `[launchMonitor] MOMENTUM signal: ${c.mint} — ${c.buyCount} buys / ${c.volumeSol.toFixed(3)} SOL ` +
+      `[launchMonitor] MOMENTUM signal: ${c.mint} — ${c.buyCount} buys / ${c.volumeSol.toFixed(3)} SOL / ` +
+        `${uniqueBuyers} unique buyers / ${(roundTripVolumeShare * 100).toFixed(0)}% round-trip volume ` +
         `within ${elapsedSec.toFixed(1)}s of launch`
     );
 
@@ -72,6 +92,12 @@ export function startLaunchMonitor(onSignal: SignalHandler) {
       solSpent: c.volumeSol,
       signature: '',
       timestamp: Date.now(),
+      momentum: {
+        buyCount: c.buyCount,
+        volumeSol: c.volumeSol,
+        uniqueBuyers,
+        roundTripVolumeShare,
+      },
     };
 
     try {
@@ -99,6 +125,7 @@ export function startLaunchMonitor(onSignal: SignalHandler) {
       buyCount: 0,
       volumeSol: 0,
       triggered: false,
+      wallets: new Map(),
       windowTimer: setTimeout(
         () => dropCandidate(mint, `momentum window (${config.momentumWindowSec}s) elapsed without threshold`),
         config.momentumWindowSec * 1000
@@ -110,16 +137,36 @@ export function startLaunchMonitor(onSignal: SignalHandler) {
 
   function handleTrade(msg: any) {
     const mint = msg.mint;
+    const trader = msg.traderPublicKey;
     if (!mint) return;
     const c = candidates.get(mint);
     if (!c || c.triggered) return;
 
-    // Only buys count toward momentum — sells are the opposite signal and
-    // are ignored here (the bot's own exit logic handles selling later).
+    if (msg.txType === 'sell') {
+      // Sells don't count toward momentum (the bot's own exit logic
+      // handles selling later), but we still track them per-wallet so a
+      // buy-then-sell-same-wallet round trip can be detected as a
+      // wash-trading signal — see trigger()'s roundTripVolumeSol calc.
+      if (trader) {
+        const activity = c.wallets.get(trader) ?? { buys: 0, sells: 0, buyVolumeSol: 0 };
+        activity.sells += 1;
+        c.wallets.set(trader, activity);
+      }
+      return;
+    }
+
     if (msg.txType !== 'buy') return;
 
+    const solAmount = Number(msg.solAmount ?? 0);
     c.buyCount += 1;
-    c.volumeSol += Number(msg.solAmount ?? 0);
+    c.volumeSol += solAmount;
+
+    if (trader) {
+      const activity = c.wallets.get(trader) ?? { buys: 0, sells: 0, buyVolumeSol: 0 };
+      activity.buys += 1;
+      activity.buyVolumeSol += solAmount;
+      c.wallets.set(trader, activity);
+    }
 
     if (c.buyCount >= config.momentumMinBuys && c.volumeSol >= config.momentumMinVolumeSol) {
       void trigger(c);

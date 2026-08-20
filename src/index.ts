@@ -1,6 +1,7 @@
 import { config } from './config';
 import { BuySignal } from './walletMonitor';
 import { startLaunchMonitor } from './launchMonitor';
+import { evaluateConviction } from './conviction';
 import { runRiskChecks } from './riskChecks';
 import { checkSpendAllowed, recordBuy } from './spendTracker';
 import { executeBuy } from './executor';
@@ -15,7 +16,10 @@ console.log(
   `Entry strategy: pump.fun launch momentum — ${config.momentumMinBuys} buys + ` +
     `${config.momentumMinVolumeSol} SOL within ${config.momentumWindowSec}s of launch`
 );
-console.log(`Position size: ${config.positionSizeSol} SOL | Daily cap: ${config.dailySpendCapSol} SOL`);
+console.log(
+  `Position size: ${config.minPositionSizeSol}-${config.maxPositionSizeSol} SOL (conviction-scaled) | ` +
+    `Daily cap: ${config.dailySpendCapSol} SOL`
+);
 console.log(
   `Exit strategy: take-profit +${(config.takeProfitPct * 100).toFixed(0)}% | ` +
     `stop-loss -${(config.stopLossPct * 100).toFixed(0)}% | ` +
@@ -49,13 +53,28 @@ async function handleSignal(signal: BuySignal) {
       return;
     }
 
-    const spendCheck = checkSpendAllowed(mint, config.positionSizeSol);
+    const conviction = await evaluateConviction(signal);
+    if (!conviction.passed) {
+      console.log(`[index] SKIPPED ${mint}: ${conviction.reason}`);
+      return;
+    }
+    const positionSizeSol = conviction.positionSizeSol;
+    console.log(
+      `[index] conviction for ${mint}: score ${conviction.score.toFixed(2)} → ${positionSizeSol.toFixed(4)} SOL ` +
+        `(momentum ${conviction.breakdown.momentum.toFixed(2)}, holderHealth ${conviction.breakdown.holderHealth.toFixed(2)}, ` +
+        `washHealth ${conviction.breakdown.washHealth.toFixed(2)}` +
+        (conviction.breakdown.creatorPct !== null ? `, creator ${(conviction.breakdown.creatorPct * 100).toFixed(1)}%` : '') +
+        (conviction.breakdown.top10Pct !== null ? `, top10 ${(conviction.breakdown.top10Pct * 100).toFixed(1)}%` : '') +
+        ')'
+    );
+
+    const spendCheck = checkSpendAllowed(mint, positionSizeSol);
     if (!spendCheck.allowed) {
       console.log(`[index] SKIPPED ${mint}: ${spendCheck.reason}`);
       return;
     }
 
-    const risk = await runRiskChecks(mint, config.positionSizeSol, {
+    const risk = await runRiskChecks(mint, positionSizeSol, {
       solSpentLamports: Math.floor(signal.solSpent * 1e9),
       tokensReceivedRaw: signal.tokensReceivedRaw,
     });
@@ -63,7 +82,7 @@ async function handleSignal(signal: BuySignal) {
       return; // runRiskChecks already logs the reason
     }
 
-    const result = await executeBuy(mint, config.positionSizeSol);
+    const result = await executeBuy(mint, positionSizeSol);
 
     if (result.error) {
       console.error(`[index] execution failed for ${mint}: ${result.error}`);
@@ -74,13 +93,13 @@ async function handleSignal(signal: BuySignal) {
     // actually happened (or was dry-run logged, so the full pipeline —
     // including exit monitoring — can still be exercised end-to-end in
     // dry-run testing).
-    recordBuy(mint, config.positionSizeSol);
+    recordBuy(mint, positionSizeSol);
 
     if (result.outAmountRaw) {
       addPosition({
         mint,
         sourceWallet: signal.walletAddress,
-        entrySolSpent: config.positionSizeSol,
+        entrySolSpent: positionSizeSol,
         tokensAmountRaw: result.outAmountRaw,
         boughtAt: Date.now(),
         buySignature: result.signature,
@@ -101,7 +120,7 @@ async function handleSignal(signal: BuySignal) {
     notifyBuy({
       mint,
       sourceWallet: signal.walletAddress,
-      solSpent: config.positionSizeSol,
+      solSpent: positionSizeSol,
       signature: result.signature,
       dryRun: result.dryRun,
     });

@@ -23,7 +23,11 @@ export interface Config {
   webhookPort: number;
   targetWallets: string[];
   walletPrivateKey: string; // base58, only required if not dry run
-  positionSizeSol: number;
+  // Position size is no longer fixed — see conviction.ts. It's scaled
+  // between these bounds based on a composite conviction score (momentum
+  // strength, holder concentration health, wash-trading health).
+  minPositionSizeSol: number;
+  maxPositionSizeSol: number;
   dailySpendCapSol: number;
   duplicateBuyWindowMs: number;
   minLiquidityUsd: number;
@@ -89,6 +93,22 @@ export interface Config {
   // once. Each tracked token costs metered PumpPortal trade events, so this
   // bounds both cost and memory during a burst of new launches.
   momentumMaxConcurrent: number;
+  // ==== Conviction scoring (conviction.ts) ====
+  // Hard-reject a buy if the creator wallet holds more than this fraction
+  // of total supply outright — a large personal stash outside the bonding
+  // curve is a dump risk. Default 5% matches the commonly-cited rug-pull
+  // threshold (see conviction.ts for sourcing).
+  maxCreatorHoldingPct: number;
+  // Hard-reject if holder ranks #2-#11 (the single largest holder is
+  // excluded — pre-migration that's almost always the bonding curve's own
+  // reserve, not a real holder) together hold more than this fraction of
+  // total supply. Default 30%, same rationale as maxCreatorHoldingPct.
+  maxTopHolderConcentrationPct: number;
+  // Hard-reject if more than this fraction of buy volume in the momentum
+  // window came from wallets that also sold within the same window — that
+  // round-tripping pattern (buy then sell, not just accumulate) is the
+  // clearest wash-trading signal available from trade data alone.
+  maxRoundTripVolumeSharePct: number;
 }
 
 function loadConfig(): Config {
@@ -133,7 +153,8 @@ function loadConfig(): Config {
     webhookPort: Number(process.env.PORT ?? process.env.WEBHOOK_PORT ?? 8080),
     targetWallets,
     walletPrivateKey,
-    positionSizeSol: Number(process.env.POSITION_SIZE_SOL ?? 0.05),
+    minPositionSizeSol: Number(process.env.MIN_POSITION_SIZE_SOL ?? 0.03),
+    maxPositionSizeSol: Number(process.env.MAX_POSITION_SIZE_SOL ?? 0.08),
     dailySpendCapSol: Number(process.env.DAILY_SPEND_CAP_SOL ?? 0.5),
     duplicateBuyWindowMs: Number(process.env.DUPLICATE_BUY_WINDOW_MIN ?? 10) * 60_000,
     minLiquidityUsd: Number(process.env.MIN_LIQUIDITY_USD ?? 5000),
@@ -166,6 +187,9 @@ function loadConfig(): Config {
     momentumMinBuys: Number(process.env.MOMENTUM_MIN_BUYS ?? 8),
     momentumMinVolumeSol: Number(process.env.MOMENTUM_MIN_VOLUME_SOL ?? 3),
     momentumMaxConcurrent: Number(process.env.MOMENTUM_MAX_CONCURRENT ?? 40),
+    maxCreatorHoldingPct: Number(process.env.MAX_CREATOR_HOLDING_PCT ?? 0.05),
+    maxTopHolderConcentrationPct: Number(process.env.MAX_TOP_HOLDER_CONCENTRATION_PCT ?? 0.3),
+    maxRoundTripVolumeSharePct: Number(process.env.MAX_ROUND_TRIP_VOLUME_SHARE_PCT ?? 0.5),
   };
 }
 
