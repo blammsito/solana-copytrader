@@ -389,6 +389,39 @@ export async function executeSell(
       }
       console.warn(`[executor] wider-slippage retry for ${mint} also failed (${widerAttempt.error})`);
     }
+
+    // Even 20% wasn't enough — some pump.fun tokens crash hard and fast
+    // enough that the price moves past that too between quote and landing,
+    // or the pool is just thin enough that a position-sized sell always has
+    // >20% impact. At this point we're already trying to exit a stop-loss,
+    // meaning a loss is already accepted; getting out at a materially worse
+    // price beats leaving the position stuck and requiring a manual sell on
+    // pump.fun's own site (which is what was happening before this tier
+    // existed). One last attempt at 50% slippage tolerance — wide enough to
+    // clear almost any real (non-honeypot) price movement.
+    const lastResortSlippageBps = 5000; // 50%
+    console.warn(
+      `[executor] wider-slippage retry for ${mint} failed too — making one last-resort attempt ` +
+        `at ${lastResortSlippageBps}bps (50%) slippage tolerance before giving up`
+    );
+    const lastResort = await getQuote(mint, SOL_MINT, sellAmountRaw, undefined, lastResortSlippageBps);
+    if (lastResort.quote) {
+      const lastResortExpectedSol = Number(lastResort.quote.outAmount) / 1e9;
+      const lastResortAttempt = await performSwap(lastResort.quote, signer!);
+      if (!lastResortAttempt.error) {
+        console.log(
+          `[executor] LIVE sell executed via last-resort 50% slippage retry: ${lastResortAttempt.signature}`
+        );
+        return {
+          dryRun: false,
+          mint,
+          amountSol: lastResortExpectedSol,
+          signature: lastResortAttempt.signature,
+          outAmountRaw: lastResort.quote.outAmount,
+        };
+      }
+      console.warn(`[executor] last-resort 50% slippage retry for ${mint} also failed (${lastResortAttempt.error})`);
+    }
   }
 
   // Jupiter's router has a known issue building valid sell transactions
