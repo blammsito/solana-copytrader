@@ -182,7 +182,13 @@ function loadConfig(): Config {
     stopLossGraceSec: Number(process.env.STOP_LOSS_GRACE_SEC ?? 45),
     exitCheckStaggerMs: Number(process.env.EXIT_CHECK_STAGGER_MS ?? 400),
     discordWebhookUrl: process.env.DISCORD_WEBHOOK_URL ?? '',
-    pumpPortalApiKey: requireEnv('PUMPPORTAL_API_KEY'),
+    // Soft-required, not requireEnv(): standalone scripts (report.ts,
+    // vetSniperWallets.ts, convictionReport.ts) all import config.ts but
+    // never touch PumpPortal, and shouldn't crash just because a local
+    // .env doesn't have this set. launchMonitor.ts — the actual consumer —
+    // checks this itself and refuses to start without it, so the real bot
+    // process still fails loud rather than silently running with no feed.
+    pumpPortalApiKey: process.env.PUMPPORTAL_API_KEY ?? '',
     momentumWindowSec: Number(process.env.MOMENTUM_WINDOW_SEC ?? 20),
     momentumMinBuys: Number(process.env.MOMENTUM_MIN_BUYS ?? 8),
     momentumMinVolumeSol: Number(process.env.MOMENTUM_MIN_VOLUME_SOL ?? 3),

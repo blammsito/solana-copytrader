@@ -43,6 +43,14 @@ interface Candidate {
  * riskChecks.ts's entry-momentum check correctly skips itself.
  */
 export function startLaunchMonitor(onSignal: SignalHandler) {
+  if (!config.pumpPortalApiKey) {
+    throw new Error(
+      'PUMPPORTAL_API_KEY is not set — the bot has no entry signal source without it. ' +
+        'Get a free API key at https://pumpportal.fun and set it before starting the bot ' +
+        '(standalone scripts like report.ts don\'t need this — only the live bot does).'
+    );
+  }
+
   const candidates = new Map<string, Candidate>();
   let ws: WebSocket | null = null;
   let reconnectDelayMs = 1000;
