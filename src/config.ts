@@ -67,6 +67,28 @@ export interface Config {
   // mobile app) on every real buy/sell. Optional — if unset, notifications
   // are silently skipped so this never blocks the bot from running.
   discordWebhookUrl: string;
+  // ==== Own-trader entry strategy (launchMonitor.ts) ====
+  // The bot no longer mirrors specific wallets — it watches every new
+  // pump.fun launch itself via PumpPortal's websocket feed and buys into
+  // ones showing real early momentum. This key is required: new-token
+  // events are free, but per-token trade/volume tracking (subscribeTokenTrade)
+  // is metered and needs an authenticated, funded PumpPortal account.
+  pumpPortalApiKey: string;
+  // How long after launch to keep counting buys/volume before giving up on
+  // a token that never caught on. Short on purpose — the whole point is
+  // catching momentum early, not confirming it after the move is over.
+  momentumWindowSec: number;
+  // Minimum number of buy transactions within the window before a token is
+  // considered to have real momentum (not just one or two whale buys).
+  momentumMinBuys: number;
+  // Minimum SOL volume (buys only) within the window, required alongside
+  // momentumMinBuys — combining count + volume avoids both a wash of tiny
+  // dust buys and a single large buy looking like broad interest.
+  momentumMinVolumeSol: number;
+  // Caps how many just-launched tokens we track buy/volume data for at
+  // once. Each tracked token costs metered PumpPortal trade events, so this
+  // bounds both cost and memory during a burst of new launches.
+  momentumMaxConcurrent: number;
 }
 
 function loadConfig(): Config {
@@ -139,6 +161,11 @@ function loadConfig(): Config {
     stopLossGraceSec: Number(process.env.STOP_LOSS_GRACE_SEC ?? 45),
     exitCheckStaggerMs: Number(process.env.EXIT_CHECK_STAGGER_MS ?? 400),
     discordWebhookUrl: process.env.DISCORD_WEBHOOK_URL ?? '',
+    pumpPortalApiKey: requireEnv('PUMPPORTAL_API_KEY'),
+    momentumWindowSec: Number(process.env.MOMENTUM_WINDOW_SEC ?? 20),
+    momentumMinBuys: Number(process.env.MOMENTUM_MIN_BUYS ?? 8),
+    momentumMinVolumeSol: Number(process.env.MOMENTUM_MIN_VOLUME_SOL ?? 3),
+    momentumMaxConcurrent: Number(process.env.MOMENTUM_MAX_CONCURRENT ?? 40),
   };
 }
 

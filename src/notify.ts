@@ -40,7 +40,7 @@ export function notifyBuy(params: {
   const tag = dryRun ? ' [DRY RUN]' : '';
   const link = !dryRun && signature ? `\nhttps://solscan.io/tx/${signature}` : '';
   void notifyDiscord(
-    `🟢 **BUY**${tag} — copied ${shortAddr(sourceWallet)}\n` +
+    `🟢 **BUY**${tag} — momentum entry (creator ${shortAddr(sourceWallet)})\n` +
       `Token: \`${mint}\`\n` +
       `Spent: ${solSpent.toFixed(4)} SOL${link}`
   );

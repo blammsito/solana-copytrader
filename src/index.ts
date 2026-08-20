@@ -1,5 +1,6 @@
 import { config } from './config';
-import { startWalletMonitor, BuySignal } from './walletMonitor';
+import { BuySignal } from './walletMonitor';
+import { startLaunchMonitor } from './launchMonitor';
 import { runRiskChecks } from './riskChecks';
 import { checkSpendAllowed, recordBuy } from './spendTracker';
 import { executeBuy } from './executor';
@@ -8,9 +9,12 @@ import { startExitMonitor } from './exitManager';
 import { notifyBuy } from './notify';
 
 console.log('='.repeat(60));
-console.log('Solana copy-trading bot starting');
+console.log('Solana momentum-sniper bot starting');
 console.log(`Mode: ${config.dryRun ? 'DRY RUN (no real trades)' : 'LIVE — real SOL will be spent'}`);
-console.log(`Target wallets: ${config.targetWallets.length}`);
+console.log(
+  `Entry strategy: pump.fun launch momentum — ${config.momentumMinBuys} buys + ` +
+    `${config.momentumMinVolumeSol} SOL within ${config.momentumWindowSec}s of launch`
+);
 console.log(`Position size: ${config.positionSizeSol} SOL | Daily cap: ${config.dailySpendCapSol} SOL`);
 console.log(
   `Exit strategy: take-profit +${(config.takeProfitPct * 100).toFixed(0)}% | ` +
@@ -106,5 +110,5 @@ async function handleSignal(signal: BuySignal) {
   }
 }
 
-startWalletMonitor(handleSignal);
+startLaunchMonitor(handleSignal);
 startExitMonitor();
