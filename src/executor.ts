@@ -228,6 +228,81 @@ async function performSwap(
 }
 
 /**
+ * Last-resort sell fallback: builds and sends the sell directly through
+ * PumpPortal's trade-local API instead of Jupiter. This is a genuinely
+ * different code path — PumpPortal builds the transaction straight against
+ * pump.fun's own bonding-curve/AMM program (`pool: "auto"` resolves
+ * whichever venue the token actually lives on) rather than through
+ * Jupiter's aggregator/routing, so it has a real chance of succeeding when
+ * every Jupiter-routed attempt reverts with the same slippage error —
+ * particularly for bonding-curve-native tokens, where Jupiter has
+ * essentially one route to work with in the first place.
+ *
+ * Sells "100%" of the wallet's actual holdings (a value PumpPortal
+ * resolves server-side against the live on-chain balance) rather than a
+ * specific raw amount, so it can't suffer the same stale-tracked-amount
+ * mismatch a raw-amount sell can. Free, unauthenticated endpoint — this is
+ * PumpPortal's self-custody "Local Transaction API", separate from (and
+ * doesn't need) the PUMPPORTAL_API_KEY used for the websocket data feed.
+ *
+ * amountSol is computed from the wallet's actual SOL balance before/after
+ * (net of network + priority fees) rather than any upfront quote, since
+ * this endpoint doesn't return one — more honest than reusing a stale
+ * Jupiter quote from earlier attempts that already failed.
+ */
+async function performPumpPortalSell(
+  mint: string,
+  signer: Keypair
+): Promise<{ signature?: string; amountSol?: number; error?: string }> {
+  try {
+    const balanceBefore = await connection.getBalance(signer.publicKey, 'confirmed');
+
+    const res = await fetch('https://pumpportal.fun/api/trade-local', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publicKey: signer.publicKey.toBase58(),
+        action: 'sell',
+        mint,
+        amount: '100%',
+        denominatedInSol: 'false',
+        slippage: 50,
+        priorityFee: 0.0005,
+        pool: 'auto',
+      }),
+    });
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      return { error: `PumpPortal trade-local request failed (${res.status}): ${body.slice(0, 300)}` };
+    }
+
+    const txBuf = Buffer.from(await res.arrayBuffer());
+    const tx = VersionedTransaction.deserialize(txBuf);
+    tx.sign([signer]);
+
+    const signature = await connection.sendRawTransaction(tx.serialize(), {
+      skipPreflight: false,
+      maxRetries: 3,
+    });
+
+    const { value } = await connection.confirmTransaction(signature, 'confirmed');
+    if (value.err) {
+      return {
+        error: `transaction landed but reverted on-chain: ${JSON.stringify(value.err)} (sig ${signature})`,
+      };
+    }
+
+    const balanceAfter = await connection.getBalance(signer.publicKey, 'confirmed');
+    const amountSol = Math.max(0, (balanceAfter - balanceBefore) / 1e9);
+
+    return { signature, amountSol };
+  } catch (err) {
+    return { error: (err as Error).message };
+  }
+}
+
+/**
  * Executes (or, in dry-run mode, simulates and logs) a SOL -> token buy
  * of `amountSol` SOL worth of `mint` via the Jupiter Swap API.
  */
@@ -431,45 +506,60 @@ export async function executeSell(
   // token directly on pump.fun's own site works. If the primary route used
   // that venue, retry once against any other available route before giving
   // up, so a position isn't stuck forever against a single broken route.
+  let lastError = primaryAttempt.error ?? 'unknown error';
   const usedPumpFunAmm = (quote.routePlan ?? []).some(
     (leg: any) => leg?.swapInfo?.label === 'Pump.fun Amm'
   );
-  if (!usedPumpFunAmm) {
-    return { dryRun: false, mint, amountSol: expectedSol, error: primaryAttempt.error };
+
+  if (usedPumpFunAmm) {
+    console.warn(`[executor] sell via Pump.fun Amm route failed (${lastError}) — retrying with that venue excluded`);
+    const fallback = await getQuote(mint, SOL_MINT, sellAmountRaw, 'Pump.fun Amm');
+    if (fallback.quote) {
+      const fallbackExpectedSol = Number(fallback.quote.outAmount) / 1e9;
+      const fallbackAttempt = await performSwap(fallback.quote, signer!);
+      if (!fallbackAttempt.error) {
+        console.log(
+          `[executor] LIVE sell executed via fallback route (Pump.fun Amm excluded): ${fallbackAttempt.signature}`
+        );
+        return {
+          dryRun: false,
+          mint,
+          amountSol: fallbackExpectedSol,
+          signature: fallbackAttempt.signature,
+          outAmountRaw: fallback.quote.outAmount,
+        };
+      }
+      lastError = `primary route failed (${lastError}); venue-excluded retry also failed (${fallbackAttempt.error})`;
+    } else {
+      lastError = `primary route failed (${lastError}); venue-excluded quote also failed (${fallback.error})`;
+    }
   }
 
-  console.warn(
-    `[executor] sell via Pump.fun Amm route failed (${primaryAttempt.error}) — retrying with that venue excluded`
-  );
-  const fallback = await getQuote(mint, SOL_MINT, sellAmountRaw, 'Pump.fun Amm');
-  if (!fallback.quote) {
+  // Every Jupiter-routed attempt has failed. Jupiter still has to build a
+  // transaction that simulates cleanly through its aggregator — for a token
+  // that's crashed hard, is still bonding-curve-native, or has some other
+  // quirk Jupiter's routing doesn't handle well, that can fail even though
+  // the token is genuinely still sellable directly against pump.fun's own
+  // program. This is what was actually forcing manual sells on pump.fun's
+  // site before this fallback existed. PumpPortal's trade-local API builds
+  // that transaction directly instead of going through Jupiter at all — a
+  // real chance of landing where every attempt above reverted identically.
+  console.warn(`[executor] all Jupiter-routed sells for ${mint} failed (${lastError}) — trying PumpPortal directly as a last resort`);
+  const pumpPortalAttempt = await performPumpPortalSell(mint, signer!);
+  if (!pumpPortalAttempt.error) {
+    console.log(`[executor] LIVE sell executed via PumpPortal fallback: ${pumpPortalAttempt.signature}`);
     return {
       dryRun: false,
       mint,
-      amountSol: expectedSol,
-      error: `primary route failed (${primaryAttempt.error}); fallback quote also failed (${fallback.error})`,
+      amountSol: pumpPortalAttempt.amountSol ?? expectedSol,
+      signature: pumpPortalAttempt.signature,
     };
   }
 
-  const fallbackExpectedSol = Number(fallback.quote.outAmount) / 1e9;
-  const fallbackAttempt = await performSwap(fallback.quote, signer!);
-  if (fallbackAttempt.error) {
-    return {
-      dryRun: false,
-      mint,
-      amountSol: expectedSol,
-      error: `primary route failed (${primaryAttempt.error}); fallback route also failed (${fallbackAttempt.error})`,
-    };
-  }
-
-  console.log(
-    `[executor] LIVE sell executed via fallback route (Pump.fun Amm excluded): ${fallbackAttempt.signature}`
-  );
   return {
     dryRun: false,
     mint,
-    amountSol: fallbackExpectedSol,
-    signature: fallbackAttempt.signature,
-    outAmountRaw: fallback.quote.outAmount,
+    amountSol: expectedSol,
+    error: `${lastError}; PumpPortal fallback also failed (${pumpPortalAttempt.error})`,
   };
 }
