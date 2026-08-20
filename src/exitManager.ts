@@ -2,6 +2,7 @@ import { config } from './config';
 import { getOpenPositions, removePosition, recordNoBalanceStrike } from './positionTracker';
 import { executeSell } from './executor';
 import { recordClosedTrade } from './tradeLedger';
+import { notifySell } from './notify';
 
 // How many consecutive exit-check cycles a position must show a confirmed
 // zero on-chain balance before we give up trying to sell it and drop it
@@ -121,6 +122,15 @@ export async function checkExits(): Promise<void> {
         sellResult.dryRun ? ' (dry run)' : ` — sig ${sellResult.signature}`
       } — realized P&L: ${pnlSol >= 0 ? '+' : ''}${pnlSol.toFixed(4)} SOL (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%)`
     );
+
+    notifySell({
+      mint: pos.mint,
+      pnlSol,
+      pnlPct,
+      exitReason: reason,
+      signature: sellResult.signature,
+      dryRun: sellResult.dryRun,
+    });
   }
 }
 

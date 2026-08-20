@@ -5,6 +5,7 @@ import { checkSpendAllowed, recordBuy } from './spendTracker';
 import { executeBuy } from './executor';
 import { addPosition, hasOpenPosition } from './positionTracker';
 import { startExitMonitor } from './exitManager';
+import { notifyBuy } from './notify';
 
 console.log('='.repeat(60));
 console.log('Solana copy-trading bot starting');
@@ -92,6 +93,14 @@ async function handleSignal(signal: BuySignal) {
     } else {
       console.log(`[index] LIVE buy complete for ${mint} — sig ${result.signature}`);
     }
+
+    notifyBuy({
+      mint,
+      sourceWallet: signal.walletAddress,
+      solSpent: config.positionSizeSol,
+      signature: result.signature,
+      dryRun: result.dryRun,
+    });
   } finally {
     mintsInFlight.delete(mint);
   }

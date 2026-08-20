@@ -63,6 +63,10 @@ export interface Config {
   // cycle trades a little exit-reaction latency for actually getting an
   // answer instead of a rate-limit error.
   exitCheckStaggerMs: number;
+  // Discord webhook URL used to push a phone notification (via the Discord
+  // mobile app) on every real buy/sell. Optional — if unset, notifications
+  // are silently skipped so this never blocks the bot from running.
+  discordWebhookUrl: string;
 }
 
 function loadConfig(): Config {
@@ -134,6 +138,7 @@ function loadConfig(): Config {
     maxEntryRunUpPct: Number(process.env.MAX_ENTRY_RUNUP_PCT ?? 0.2),
     stopLossGraceSec: Number(process.env.STOP_LOSS_GRACE_SEC ?? 45),
     exitCheckStaggerMs: Number(process.env.EXIT_CHECK_STAGGER_MS ?? 400),
+    discordWebhookUrl: process.env.DISCORD_WEBHOOK_URL ?? '',
   };
 }
 
