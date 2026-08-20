@@ -9,7 +9,8 @@
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
     "typecheck": "tsc --noEmit",
-    "report": "ts-node src/report.ts"
+    "report": "ts-node src/report.ts",
+    "vet-wallets": "ts-node src/vetSniperWallets.ts"
   },
   "dependencies": {
     "@solana/web3.js": "^1.95.3",
