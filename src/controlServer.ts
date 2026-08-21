@@ -1,6 +1,7 @@
 import express from 'express';
 import { config } from './config';
 import { getOpenPositions, holdPosition, releasePosition } from './positionTracker';
+import { CONTROL_PAGE_HTML } from './controlPage';
 
 /**
  * Small HTTP control API for manually overriding the bot's automatic exit
@@ -16,6 +17,10 @@ import { getOpenPositions, holdPosition, releasePosition } from './positionTrack
  * is easier from curl/scripts).
  *
  * Endpoints:
+ *   GET  /control                   — mobile-friendly HTML control page
+ *                                      (controlPage.ts); bookmark/Add to
+ *                                      Home Screen the full URL including
+ *                                      ?key=... for one-tap access
  *   GET  /positions                 — list open positions (mint, entry cost,
  *                                      bought-at, held/scaledOut/dryRun flags)
  *   POST /positions/:mint/hold      — set held=true; exitManager skips it
@@ -54,6 +59,16 @@ export function startControlServer(): void {
   });
 
   app.get('/health', (_req, res) => res.status(200).send('ok'));
+
+  // Gated by the same shared-secret check as every other route — a visitor
+  // without the correct ?key= gets the standard 401/503 JSON error, never
+  // the page itself. This also means the page's own JS never needs the
+  // secret hardcoded into it (see controlPage.ts) — it just reads the same
+  // ?key= that got it past this check.
+  app.get('/control', (req, res) => {
+    if (!checkAuth(req, res)) return;
+    res.type('html').send(CONTROL_PAGE_HTML);
+  });
 
   app.get('/positions', (req, res) => {
     if (!checkAuth(req, res)) return;
@@ -94,7 +109,7 @@ export function startControlServer(): void {
   app.listen(config.webhookPort, () => {
     console.log(
       `[controlServer] listening on port ${config.webhookPort} ` +
-        `(GET /positions, POST /positions/:mint/hold, POST /positions/:mint/release)` +
+        `(GET /control, GET /positions, POST /positions/:mint/hold, POST /positions/:mint/release)` +
         (config.controlApiSecret ? '' : ' — CONTROL_API_SECRET unset, all requests will be refused')
     );
   });
