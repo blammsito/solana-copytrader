@@ -136,6 +136,78 @@ function clamp01(n: number): number {
 }
 
 /**
+ * Scores a trendScanner.ts-sourced signal: a token that's already shown a
+ * confirmed uptrend and has since pulled back into a "buy the dip" zone
+ * (see analyzeTrend() in trendScanner.ts for exactly how that's judged).
+ *
+ * There's no per-trade wallet data here the way there is for a momentum
+ * burst (no individual buy/sell events attributed to specific wallets), so
+ * the wash-trading and unique-buyer gates from evaluateConviction don't
+ * apply — there's nothing to compute them from. What does still apply, and
+ * still gets checked: holder concentration, via the exact same
+ * checkHolderConcentration() used by the momentum path (creator wallet is
+ * unknown for a trend-discovered token, so only the top10Pct half of that
+ * check contributes here).
+ *
+ * Score is the average of trend strength (how big the confirmed move was),
+ * dip quality (how close the current pullback sits to the middle of the
+ * configured buy zone, rather than just barely inside either edge of it),
+ * and holder-concentration health. Reuses ConvictionResult.breakdown's
+ * existing shape so every downstream consumer (index.ts logging,
+ * positionTracker, the trade ledger, report scripts) works unchanged —
+ * `momentum` here holds the trend-strength component and `washHealth` holds
+ * the dip-quality component, not their momentum-strategy meanings.
+ */
+async function evaluateTrendConviction(
+  mint: string,
+  trend: NonNullable<BuySignal['trend']>,
+  fallbackSize: number
+): Promise<ConvictionResult> {
+  const { overallGainPct, pullbackFromPeakPct } = trend;
+
+  const { top10Pct, error } = await checkHolderConcentration(mint, '');
+
+  if (top10Pct !== null && top10Pct > config.maxTopHolderConcentrationPct) {
+    return {
+      passed: false,
+      reason: `top holders (excl. bonding curve reserve) hold ${(top10Pct * 100).toFixed(1)}% of supply (max ${(
+        config.maxTopHolderConcentrationPct * 100
+      ).toFixed(1)}%) — structural dump risk`,
+      positionSizeSol: fallbackSize,
+      score: 0,
+      breakdown: { momentum: 0, holderHealth: 0, washHealth: 1, creatorPct: null, top10Pct },
+    };
+  }
+
+  if (error) {
+    console.warn(`[conviction] holder-concentration check unavailable for ${mint}: ${error} — proceeding without it`);
+  }
+
+  const trendStrengthComponent = clamp01(overallGainPct / (config.trendMinGainPct * 2));
+  const dipMid = (config.trendMinPullbackPct + config.trendMaxPullbackPct) / 2;
+  const dipHalfRange = (config.trendMaxPullbackPct - config.trendMinPullbackPct) / 2;
+  const dipQualityComponent = dipHalfRange > 0 ? clamp01(1 - Math.abs(pullbackFromPeakPct - dipMid) / dipHalfRange) : 1;
+  const holderHealthComponent = top10Pct === null ? 0.5 : 1 - clamp01(top10Pct / config.maxTopHolderConcentrationPct);
+
+  const score = clamp01((trendStrengthComponent + dipQualityComponent + holderHealthComponent) / 3);
+  const positionSizeSol =
+    config.minPositionSizeSol + score * (config.maxPositionSizeSol - config.minPositionSizeSol);
+
+  return {
+    passed: true,
+    positionSizeSol,
+    score,
+    breakdown: {
+      momentum: trendStrengthComponent,
+      holderHealth: holderHealthComponent,
+      washHealth: dipQualityComponent,
+      creatorPct: null,
+      top10Pct,
+    },
+  };
+}
+
+/**
  * Scores a momentum-triggered entry signal and decides how much SOL to buy
  * with, or whether to skip it entirely.
  *
@@ -155,6 +227,10 @@ function clamp01(n: number): number {
  */
 export async function evaluateConviction(signal: BuySignal): Promise<ConvictionResult> {
   const fallbackSize = config.minPositionSizeSol;
+
+  if (signal.trend) {
+    return evaluateTrendConviction(signal.mint, signal.trend, fallbackSize);
+  }
 
   if (!signal.momentum) {
     // Signal came from a path that doesn't provide momentum/wash data

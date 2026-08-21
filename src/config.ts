@@ -190,6 +190,54 @@ export interface Config {
   // insider same-block buy-in rather than momentum building organically
   // over the full window.
   maxEarlyBurstVolumeSharePct: number;
+  // ==== Trend-following entry strategy (trendScanner.ts) — replaces the
+  // reactive launch/migration momentum strategy above. Instead of reacting
+  // to brand-new tokens seconds old, this periodically scans Solana's
+  // trending pools (via GeckoTerminal's free public API, no key required)
+  // for tokens that have already proven a real uptrend and pulled back into
+  // a buyable dip — never a token still climbing straight up, never one
+  // with no real trend behind it. ====
+  // How often (seconds) to run a scan cycle.
+  trendScanIntervalSec: number;
+  // OHLCV candle size in minutes (GeckoTerminal's minute-timeframe
+  // aggregate) and how many candles to pull per pool — together these set
+  // the lookback window used to judge "is this a real uptrend." E.g. 15 x
+  // 32 = an 8-hour lookback built from 15-minute candles.
+  trendCandleAggregateMin: number;
+  trendCandleLimit: number;
+  // Minimum candles required before a trend judgement is trusted — too few
+  // and there isn't enough history to distinguish a real trend from noise.
+  trendMinCandles: number;
+  // Minimum peak-vs-window-start gain required to count as a real,
+  // tradeable uptrend rather than noise.
+  trendMinGainPct: number;
+  // The "buy the dip" zone: how far off the peak the current price must
+  // have pulled back — too shallow (below the min) and we're still buying
+  // near the top; too deep (above the max) and the trend may have already
+  // broken down rather than just be pulling back.
+  trendMinPullbackPct: number;
+  trendMaxPullbackPct: number;
+  // The current price must still be at least this much above where the
+  // lookback window started — guards against a near-total round-trip back
+  // to baseline being mistaken for a healthy pullback.
+  trendMinFloorAboveStartPct: number;
+  // Cheap prefilters applied directly from the trending_pools response
+  // (before spending part of the OHLCV call budget on a candidate).
+  trendMinLiquidityUsd: number;
+  trendMinVolume24hUsd: number;
+  // Caps how many OHLCV calls a single scan cycle can make — keeps every
+  // cycle well under GeckoTerminal's free-tier 30-calls/minute limit
+  // regardless of how many pools are trending at once.
+  trendMaxOhlcvCallsPerScan: number;
+  // Once a mint has produced a signal, suppress re-signaling it again for
+  // this many milliseconds — avoids repeatedly re-evaluating (and
+  // re-spending risk-check RPC calls on) the same still-qualifying token
+  // every single scan cycle.
+  trendSignalCooldownMs: number;
+  // Delay between successive GeckoTerminal API calls within a scan cycle.
+  // Free tier is 30 calls/minute (1 every 2s) — spacing at slightly more
+  // than that keeps every cycle safely under the limit.
+  geckoTerminalRequestDelayMs: number;
 }
 
 function loadConfig(): Config {
@@ -301,6 +349,19 @@ function loadConfig(): Config {
     maxEntryPullbackFromPeakPct: Number(process.env.MAX_ENTRY_PULLBACK_FROM_PEAK_PCT ?? 0.15),
     snipeBurstWindowSec: Number(process.env.SNIPE_BURST_WINDOW_SEC ?? 3),
     maxEarlyBurstVolumeSharePct: Number(process.env.MAX_EARLY_BURST_VOLUME_SHARE_PCT ?? 0.65),
+    trendScanIntervalSec: Number(process.env.TREND_SCAN_INTERVAL_SEC ?? 120),
+    trendCandleAggregateMin: Number(process.env.TREND_CANDLE_AGGREGATE_MIN ?? 15),
+    trendCandleLimit: Number(process.env.TREND_CANDLE_LIMIT ?? 32),
+    trendMinCandles: Number(process.env.TREND_MIN_CANDLES ?? 12),
+    trendMinGainPct: Number(process.env.TREND_MIN_GAIN_PCT ?? 0.4),
+    trendMinPullbackPct: Number(process.env.TREND_MIN_PULLBACK_PCT ?? 0.1),
+    trendMaxPullbackPct: Number(process.env.TREND_MAX_PULLBACK_PCT ?? 0.35),
+    trendMinFloorAboveStartPct: Number(process.env.TREND_MIN_FLOOR_ABOVE_START_PCT ?? 0.15),
+    trendMinLiquidityUsd: Number(process.env.TREND_MIN_LIQUIDITY_USD ?? 10000),
+    trendMinVolume24hUsd: Number(process.env.TREND_MIN_VOLUME_24H_USD ?? 20000),
+    trendMaxOhlcvCallsPerScan: Number(process.env.TREND_MAX_OHLCV_CALLS_PER_SCAN ?? 12),
+    trendSignalCooldownMs: Number(process.env.TREND_SIGNAL_COOLDOWN_MIN ?? 30) * 60_000,
+    geckoTerminalRequestDelayMs: Number(process.env.GECKOTERMINAL_REQUEST_DELAY_MS ?? 2100),
   };
 }
 

@@ -48,6 +48,22 @@ export interface BuySignal {
     // provenance; conviction.ts scores both identically.
     source: 'launch' | 'migration';
   };
+  // ==== Populated by trendScanner.ts only. Mutually exclusive with
+  // `momentum` above — a signal is either a reactive momentum-burst signal
+  // or a periodic trend-scan signal, never both. conviction.ts branches on
+  // which of the two is present to pick the right scoring path. ====
+  trend?: {
+    // Peak high vs. the OHLCV lookback window's starting close — how big
+    // the confirmed uptrend was before it pulled back to here.
+    overallGainPct: number;
+    // How far the current price has fallen from that peak (0-1). Landed
+    // inside [trendMinPullbackPct, trendMaxPullbackPct] by construction —
+    // trendScanner.ts only emits a signal once a token clears that zone.
+    pullbackFromPeakPct: number;
+    liquidityUsd: number;
+    volume24hUsd: number;
+    source: 'trend';
+  };
 }
 
 type SignalHandler = (signal: BuySignal) => void | Promise<void>;

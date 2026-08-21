@@ -1,6 +1,6 @@
 import { config } from './config';
 import { BuySignal } from './walletMonitor';
-import { startLaunchMonitor } from './launchMonitor';
+import { startTrendScanner } from './trendScanner';
 import { evaluateConviction } from './conviction';
 import { runRiskChecks } from './riskChecks';
 import { checkSpendAllowed, recordBuy } from './spendTracker';
@@ -11,18 +11,14 @@ import { startControlServer } from './controlServer';
 import { notifyBuy } from './notify';
 
 console.log('='.repeat(60));
-console.log('Solana momentum-sniper bot starting');
+console.log('Solana trend-following meme-coin bot starting');
 console.log(`Mode: ${config.dryRun ? 'DRY RUN (no real trades)' : 'LIVE — real SOL will be spent'}`);
 console.log(
-  `Entry strategy: pump.fun launch momentum — ${config.momentumMinBuys} buys + ` +
-    `${config.momentumMinVolumeSol} SOL within ${config.momentumWindowSec}s of launch, ` +
-    `min ${config.momentumMinUniqueBuyers} unique buyers (holder-backed gate), ` +
-    `max ${(config.maxEntryPullbackFromPeakPct * 100).toFixed(0)}% pullback off window peak (anti "buying the top" gate), ` +
-    `max ${(config.maxEarlyBurstVolumeSharePct * 100).toFixed(0)}% volume within ${config.snipeBurstWindowSec}s (anti-sniper-burst gate)`
-);
-console.log(
-  `  + stable/migrated entry strategy — ${config.stableMomentumMinBuys} buys + ` +
-    `${config.stableMomentumMinVolumeSol} SOL within ${config.stableMomentumWindowSec}s of migrating to a real AMM`
+  `Entry strategy: trend scan (GeckoTerminal) — scans Solana's trending pools every ${config.trendScanIntervalSec}s, ` +
+    `requires a confirmed +${(config.trendMinGainPct * 100).toFixed(0)}% uptrend then a ` +
+    `${(config.trendMinPullbackPct * 100).toFixed(0)}-${(config.trendMaxPullbackPct * 100).toFixed(0)}% pullback off peak (buy-the-dip), ` +
+    `min liquidity $${config.trendMinLiquidityUsd}, min 24h volume $${config.trendMinVolume24hUsd}. ` +
+    `Brand-new/just-launched tokens are no longer traded — the old launch-momentum strategy (launchMonitor.ts) is disabled.`
 );
 console.log(
   `Position size: ${config.minPositionSizeSol}-${config.maxPositionSizeSol} SOL (conviction-scaled) | ` +
@@ -145,6 +141,6 @@ async function handleSignal(signal: BuySignal) {
   }
 }
 
-startLaunchMonitor(handleSignal);
+startTrendScanner(handleSignal);
 startExitMonitor();
 startControlServer();
