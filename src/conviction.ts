@@ -4,6 +4,16 @@ import { BuySignal } from './walletMonitor';
 
 const connection = new Connection(config.heliusRpcUrl, 'confirmed');
 
+const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+// A growing share of pump.fun launches mint under Token-2022 rather than the
+// legacy SPL Token program (same fact that forced executor.ts to check both
+// programs for balances). getTokenSupply/getTokenLargestAccounts don't
+// reliably support Token-2022 mints on every RPC provider — on Helius they
+// throw "Invalid param: not a Token mint" for them, which was silently
+// disabling the holder-concentration anti-rug check on essentially every
+// recent signal. See getMintInfo/getLargestHolderAmounts below for the fix.
+const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
+
 export interface ConvictionResult {
   passed: boolean;
   reason?: string;
@@ -33,6 +43,48 @@ export interface ConvictionResult {
  * every fresh token look ~100% concentrated and make this check useless.
  * This is a heuristic approximation, not a precise "real holders" figure.
  */
+/**
+ * Reads a mint's owning token program and total supply via getParsedAccountInfo
+ * rather than getTokenSupply — the parsed-account path correctly identifies
+ * and decodes both the legacy Token program and Token-2022 mint layouts,
+ * where getTokenSupply has proven unreliable for the latter on this RPC.
+ */
+async function getMintInfo(mintPubkey: PublicKey): Promise<{ programId: PublicKey; supply: number } | null> {
+  const info = await connection.getParsedAccountInfo(mintPubkey);
+  const data = info.value?.data as any;
+  if (!info.value || !data || typeof data !== 'object' || !('parsed' in data)) return null;
+  const supply = Number(data.parsed?.info?.supply);
+  if (!supply) return null;
+  return { programId: info.value.owner, supply };
+}
+
+/**
+ * Returns the raw token amount held by every account for `mintPubkey`.
+ * getTokenLargestAccounts works fine for legacy-Token-program mints, but
+ * isn't reliable for Token-2022 ones on this RPC (see the comment above
+ * TOKEN_2022_PROGRAM_ID) — for those, enumerate holder accounts directly via
+ * getParsedProgramAccounts filtered to this mint. A pump.fun launch is only
+ * ever seconds old when this runs, so the holder count here is always small
+ * in practice; this isn't the expensive full-token-history scan it would be
+ * for an established token.
+ */
+async function getLargestHolderAmounts(mintPubkey: PublicKey, programId: PublicKey): Promise<number[]> {
+  if (programId.equals(TOKEN_PROGRAM_ID)) {
+    const largest = await connection.getTokenLargestAccounts(mintPubkey);
+    return largest.value.map((a) => Number(a.amount));
+  }
+
+  const accounts = await connection.getParsedProgramAccounts(TOKEN_2022_PROGRAM_ID, {
+    filters: [{ memcmp: { offset: 0, bytes: mintPubkey.toBase58() } }],
+  });
+  return accounts
+    .map((acc) => {
+      const parsed = (acc.account.data as any)?.parsed;
+      return Number(parsed?.info?.tokenAmount?.amount ?? 0);
+    })
+    .filter((n) => n > 0);
+}
+
 async function checkHolderConcentration(
   mint: string,
   creatorWallet: string
@@ -40,32 +92,33 @@ async function checkHolderConcentration(
   try {
     const mintPubkey = new PublicKey(mint);
 
-    const [supplyInfo, largest] = await Promise.all([
-      connection.getTokenSupply(mintPubkey),
-      connection.getTokenLargestAccounts(mintPubkey),
-    ]);
-
-    const totalSupply = Number(supplyInfo.value.amount);
-    if (!totalSupply) {
-      return { creatorPct: null, top10Pct: null, error: 'zero or unavailable total supply' };
+    const mintInfo = await getMintInfo(mintPubkey);
+    if (!mintInfo) {
+      return { creatorPct: null, top10Pct: null, error: 'mint account not found or not parseable' };
     }
+    const { programId, supply: totalSupply } = mintInfo;
 
-    const accounts = largest.value
-      .map((a) => Number(a.amount))
-      .sort((a, b) => b - a);
+    const amounts = await getLargestHolderAmounts(mintPubkey, programId);
+    const accounts = amounts.sort((a, b) => b - a);
     const top10Pct = accounts.slice(1, 11).reduce((s, v) => s + v, 0) / totalSupply;
 
     let creatorPct: number | null = null;
     if (creatorWallet) {
       try {
-        const creatorAccounts = await connection.getTokenAccountsByOwner(new PublicKey(creatorWallet), {
-          mint: mintPubkey,
-        });
-        const creatorBalance = creatorAccounts.value.reduce((sum, acc) => {
-          // Raw SPL token account layout: amount is a u64 at byte offset 64.
-          const amount = acc.account.data.readBigUInt64LE(64);
-          return sum + Number(amount);
-        }, 0);
+        // Same reasoning as executor.ts's balance checks: query both token
+        // programs explicitly rather than relying on a mint-only filter to
+        // resolve the right one, since that resolution has proven flaky for
+        // Token-2022 accounts on this RPC.
+        let creatorBalance = 0;
+        for (const pid of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
+          const creatorAccounts = await connection.getParsedTokenAccountsByOwner(new PublicKey(creatorWallet), {
+            mint: mintPubkey,
+            programId: pid,
+          });
+          for (const acc of creatorAccounts.value) {
+            creatorBalance += Number(acc.account.data.parsed.info.tokenAmount.amount);
+          }
+        }
         creatorPct = creatorBalance / totalSupply;
       } catch (err) {
         console.warn(`[conviction] creator balance lookup failed for ${mint}: ${(err as Error).message}`);
