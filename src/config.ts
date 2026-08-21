@@ -253,6 +253,16 @@ export interface Config {
   // egress IP, not just this process's own pacing. A real cooldown gives
   // that shared window time to actually clear.
   trendThrottleCooldownCycles: number;
+  // After a losing (or breakeven) closed trade on a mint, refuse any new
+  // buy signal for that same mint for this many minutes — regardless of
+  // signal source or the shorter per-signal cooldowns above. Without this,
+  // a token chopping sideways (no real trend, just noise) can get bought,
+  // exited at a small loss (stop-loss or a stagnant max-hold), and then
+  // immediately re-qualify as a fresh signal and get bought right back
+  // into — repeating every ~signal-cooldown window and bleeding a little
+  // more (plus fees/slippage) each cycle instead of the bot recognizing
+  // "this one isn't working" and moving on.
+  reEntryLossCooldownMin: number;
 }
 
 function loadConfig(): Config {
@@ -379,6 +389,7 @@ function loadConfig(): Config {
     geckoTerminalRequestDelayMs: Number(process.env.GECKOTERMINAL_REQUEST_DELAY_MS ?? 4500),
     trendMax429BeforeAbort: Number(process.env.TREND_MAX_429_BEFORE_ABORT ?? 4),
     trendThrottleCooldownCycles: Number(process.env.TREND_THROTTLE_COOLDOWN_CYCLES ?? 2),
+    reEntryLossCooldownMin: Number(process.env.REENTRY_LOSS_COOLDOWN_MIN ?? 240),
   };
 }
 

@@ -65,3 +65,18 @@ export function recordClosedTrade(trade: ClosedTrade): void {
 export function getAllTrades(): ClosedTrade[] {
   return loadLedger().trades;
 }
+
+/**
+ * Returns the most recently closed trade for a given mint (by soldAt), or
+ * null if we've never traded it before. Used by index.ts's re-entry gate to
+ * stop the bot from immediately buying back into a mint it just lost money
+ * on — without this, a token chopping sideways can get bought, held to
+ * max-hold or a stop-loss, sold at a small loss, and then immediately
+ * re-qualify as a fresh trend signal and get bought right back into, over
+ * and over, bleeding a little more (plus fees/slippage) on every cycle.
+ */
+export function getLastTradeForMint(mint: string): ClosedTrade | null {
+  const trades = getAllTrades().filter((t) => t.mint === mint);
+  if (trades.length === 0) return null;
+  return trades.reduce((latest, t) => (t.soldAt > latest.soldAt ? t : latest));
+}

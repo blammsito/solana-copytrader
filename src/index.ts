@@ -9,6 +9,7 @@ import { addPosition, hasOpenPosition } from './positionTracker';
 import { startExitMonitor } from './exitManager';
 import { startControlServer } from './controlServer';
 import { notifyBuy } from './notify';
+import { getLastTradeForMint } from './tradeLedger';
 
 console.log('='.repeat(60));
 console.log('Solana trend-following meme-coin bot starting');
@@ -55,6 +56,24 @@ async function handleSignal(signal: BuySignal) {
     if (hasOpenPosition(mint)) {
       console.log(`[index] SKIPPED ${mint}: already holding an open position in this token`);
       return;
+    }
+
+    // Don't immediately buy back into a mint we just lost money on. A
+    // sideways-chopping token can keep re-qualifying as a fresh trend/
+    // momentum signal every cooldown window even though it's not actually
+    // going anywhere — without this, the bot re-enters, gets stopped/
+    // timed out at a small loss, and repeats, bleeding a little more each
+    // cycle instead of recognizing the pattern and staying out.
+    const lastTrade = getLastTradeForMint(mint);
+    if (lastTrade && lastTrade.pnlSol <= 0) {
+      const minutesSinceLoss = (Date.now() - lastTrade.soldAt) / 60_000;
+      if (minutesSinceLoss < config.reEntryLossCooldownMin) {
+        console.log(
+          `[index] SKIPPED ${mint}: lost ${lastTrade.pnlSol.toFixed(4)} SOL (${lastTrade.pnlPct.toFixed(1)}%) on this ` +
+            `mint ${minutesSinceLoss.toFixed(0)} min ago — re-entry cooldown is ${config.reEntryLossCooldownMin} min`
+        );
+        return;
+      }
     }
 
     const conviction = await evaluateConviction(signal);
