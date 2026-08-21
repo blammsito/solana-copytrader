@@ -58,22 +58,19 @@ async function handleSignal(signal: BuySignal) {
       return;
     }
 
-    // Don't immediately buy back into a mint we just lost money on. A
-    // sideways-chopping token can keep re-qualifying as a fresh trend/
-    // momentum signal every cooldown window even though it's not actually
-    // going anywhere — without this, the bot re-enters, gets stopped/
-    // timed out at a small loss, and repeats, bleeding a little more each
-    // cycle instead of recognizing the pattern and staying out.
+    // Never buy back into a mint we've already lost money on — permanent,
+    // not a cooldown. A sideways-chopping token can keep re-qualifying as a
+    // fresh trend/momentum signal indefinitely even though it's not really
+    // going anywhere; a time-based cooldown just delays the same bleed
+    // instead of stopping it. One loss on a mint is enough signal that it's
+    // not a good bet — the bot moves on rather than trying it again.
     const lastTrade = getLastTradeForMint(mint);
     if (lastTrade && lastTrade.pnlSol <= 0) {
-      const minutesSinceLoss = (Date.now() - lastTrade.soldAt) / 60_000;
-      if (minutesSinceLoss < config.reEntryLossCooldownMin) {
-        console.log(
-          `[index] SKIPPED ${mint}: lost ${lastTrade.pnlSol.toFixed(4)} SOL (${lastTrade.pnlPct.toFixed(1)}%) on this ` +
-            `mint ${minutesSinceLoss.toFixed(0)} min ago — re-entry cooldown is ${config.reEntryLossCooldownMin} min`
-        );
-        return;
-      }
+      console.log(
+        `[index] SKIPPED ${mint}: already lost ${lastTrade.pnlSol.toFixed(4)} SOL (${lastTrade.pnlPct.toFixed(1)}%) on ` +
+          `this mint previously — permanently excluded from re-entry`
+      );
+      return;
     }
 
     const conviction = await evaluateConviction(signal);
