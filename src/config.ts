@@ -386,7 +386,7 @@ function loadConfig(): Config {
     maxEntryPullbackFromPeakPct: Number(process.env.MAX_ENTRY_PULLBACK_FROM_PEAK_PCT ?? 0.15),
     snipeBurstWindowSec: Number(process.env.SNIPE_BURST_WINDOW_SEC ?? 3),
     maxEarlyBurstVolumeSharePct: Number(process.env.MAX_EARLY_BURST_VOLUME_SHARE_PCT ?? 0.65),
-    trendScanIntervalSec: Number(process.env.TREND_SCAN_INTERVAL_SEC ?? 180),
+    trendScanIntervalSec: Number(process.env.TREND_SCAN_INTERVAL_SEC ?? 300),
     trendCandleAggregateMin: Number(process.env.TREND_CANDLE_AGGREGATE_MIN ?? 15),
     trendCandleLimit: Number(process.env.TREND_CANDLE_LIMIT ?? 32),
     trendMinCandles: Number(process.env.TREND_MIN_CANDLES ?? 12),
@@ -400,10 +400,10 @@ function loadConfig(): Config {
     trendMinHourlyTxCount: Number(process.env.TREND_MIN_HOURLY_TX_COUNT ?? 10),
     trendMinLiquidityUsd: Number(process.env.TREND_MIN_LIQUIDITY_USD ?? 10000),
     trendMinVolume24hUsd: Number(process.env.TREND_MIN_VOLUME_24H_USD ?? 20000),
-    trendMaxOhlcvCallsPerScan: Number(process.env.TREND_MAX_OHLCV_CALLS_PER_SCAN ?? 6),
+    trendMaxOhlcvCallsPerScan: Number(process.env.TREND_MAX_OHLCV_CALLS_PER_SCAN ?? 3),
     trendSignalCooldownMs: Number(process.env.TREND_SIGNAL_COOLDOWN_MIN ?? 30) * 60_000,
-    geckoTerminalRequestDelayMs: Number(process.env.GECKOTERMINAL_REQUEST_DELAY_MS ?? 4500),
-    trendMax429BeforeAbort: Number(process.env.TREND_MAX_429_BEFORE_ABORT ?? 4),
+    geckoTerminalRequestDelayMs: Number(process.env.GECKOTERMINAL_REQUEST_DELAY_MS ?? 8000),
+    trendMax429BeforeAbort: Number(process.env.TREND_MAX_429_BEFORE_ABORT ?? 5),
     trendThrottleCooldownCycles: Number(process.env.TREND_THROTTLE_COOLDOWN_CYCLES ?? 2),
   };
 }
