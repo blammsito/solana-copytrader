@@ -238,6 +238,13 @@ export interface Config {
   // Free tier is 30 calls/minute (1 every 2s) — spacing at slightly more
   // than that keeps every cycle safely under the limit.
   geckoTerminalRequestDelayMs: number;
+  // If a scan cycle hits this many consecutive 429s in a row, stop that
+  // cycle early rather than keep spending the call budget on requests that
+  // are just going to fail — GeckoTerminal's rate limit appears to be
+  // enforced against Railway's shared egress IP as a whole, not just this
+  // process's own request rate, so backing off is sometimes the only
+  // option regardless of how conservative our own pacing is.
+  trendMax429BeforeAbort: number;
 }
 
 function loadConfig(): Config {
@@ -361,7 +368,8 @@ function loadConfig(): Config {
     trendMinVolume24hUsd: Number(process.env.TREND_MIN_VOLUME_24H_USD ?? 20000),
     trendMaxOhlcvCallsPerScan: Number(process.env.TREND_MAX_OHLCV_CALLS_PER_SCAN ?? 12),
     trendSignalCooldownMs: Number(process.env.TREND_SIGNAL_COOLDOWN_MIN ?? 30) * 60_000,
-    geckoTerminalRequestDelayMs: Number(process.env.GECKOTERMINAL_REQUEST_DELAY_MS ?? 2100),
+    geckoTerminalRequestDelayMs: Number(process.env.GECKOTERMINAL_REQUEST_DELAY_MS ?? 3000),
+    trendMax429BeforeAbort: Number(process.env.TREND_MAX_429_BEFORE_ABORT ?? 4),
   };
 }
 

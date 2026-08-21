@@ -100,6 +100,8 @@ async function scanOnce(onSignal: SignalHandler, tracked: Map<string, number>): 
 
   const now = Date.now();
   let ohlcvCallsThisCycle = 0;
+  let consecutive429Delay = 0;
+  let consecutive429Count = 0;
 
   for (const pool of pools) {
     if (ohlcvCallsThisCycle >= config.trendMaxOhlcvCallsPerScan) break;
@@ -125,17 +127,32 @@ async function scanOnce(onSignal: SignalHandler, tracked: Map<string, number>): 
 
     let ohlcv: any;
     try {
-      // GeckoTerminal free tier is 30 calls/min — space out OHLCV calls
-      // (the one call/cycle for trending_pools itself is cheap by
-      // comparison) so a single scan cycle can never come close to
-      // tripping the rate limit.
-      await sleep(config.geckoTerminalRequestDelayMs);
+      // GeckoTerminal's documented free-tier limit is 30 calls/min, but in
+      // practice a shared PaaS egress IP (Railway routes many unrelated
+      // tenants through the same pool of outbound IPs) can trip 429s well
+      // before that, since the limit is almost certainly enforced per-IP
+      // against combined traffic we don't control. consecutive429Delay
+      // adapts to that: every 429 slows down the rest of this cycle rather
+      // than hammering an endpoint that's already told us to back off.
+      await sleep(config.geckoTerminalRequestDelayMs + consecutive429Delay);
       ohlcvCallsThisCycle += 1;
       ohlcv = await gtFetch(
         `/networks/solana/pools/${poolAddress}/ohlcv/minute?aggregate=${config.trendCandleAggregateMin}&limit=${config.trendCandleLimit}`
       );
+      consecutive429Delay = 0;
     } catch (err) {
-      console.warn(`[trendScanner] OHLCV fetch failed for ${mint}: ${(err as Error).message}`);
+      const message = (err as Error).message;
+      console.warn(`[trendScanner] OHLCV fetch failed for ${mint}: ${message}`);
+      if (message.includes('429')) {
+        consecutive429Delay = Math.min(consecutive429Delay + 3000, 15000);
+        consecutive429Count += 1;
+        if (consecutive429Count >= config.trendMax429BeforeAbort) {
+          console.warn(
+            `[trendScanner] ${consecutive429Count} consecutive rate-limit errors — GeckoTerminal is throttling this IP hard right now, ending this scan cycle early rather than continuing to spend the call budget on failures`
+          );
+          break;
+        }
+      }
       continue;
     }
 
