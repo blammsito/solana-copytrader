@@ -49,12 +49,28 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// See src/trendScanner.ts's identical guard on the bot side for the full
+// rationale — a throttled API doesn't always fail fast, and a request that
+// just hangs forever would otherwise stall this whole scan silently.
+const GT_TIMEOUT_MS = 15_000;
+
 async function gtFetch(path) {
-  const res = await fetch(`${GT_BASE}${path}`, { headers: { accept: 'application/json' } });
-  if (!res.ok) {
-    throw new Error(`${res.status} ${res.statusText}`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), GT_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${GT_BASE}${path}`, { headers: { accept: 'application/json' }, signal: controller.signal });
+    if (!res.ok) {
+      throw new Error(`${res.status} ${res.statusText}`);
+    }
+    return await res.json();
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      throw new Error(`timed out after ${GT_TIMEOUT_MS}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
   }
-  return res.json();
 }
 
 /** Same judgment as analyzeTrend() in src/trendScanner.ts — see that file

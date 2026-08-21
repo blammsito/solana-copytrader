@@ -24,12 +24,32 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// A heavily rate-limited/throttled API doesn't always fail fast with a
+// clean 429 — sometimes it just never responds. Without a hard timeout, a
+// single stalled request here hangs the whole scan cycle forever (and
+// since scanOnce() refuses to start a new cycle while one is still
+// "running" — see the `scanning` guard in startTrendScanner — that also
+// permanently blocks every future cycle, with zero further log output).
+// This turns a silent hang into a normal, retriable timeout error instead.
+const GT_TIMEOUT_MS = 15_000;
+
 async function gtFetch(path: string): Promise<any> {
-  const res = await fetch(`${GT_BASE}${path}`, { headers: { accept: 'application/json' } });
-  if (!res.ok) {
-    throw new Error(`${res.status} ${res.statusText}`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), GT_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${GT_BASE}${path}`, { headers: { accept: 'application/json' }, signal: controller.signal });
+    if (!res.ok) {
+      throw new Error(`${res.status} ${res.statusText}`);
+    }
+    return await res.json();
+  } catch (err) {
+    if ((err as Error).name === 'AbortError') {
+      throw new Error(`timed out after ${GT_TIMEOUT_MS}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
   }
-  return res.json();
 }
 
 /**
@@ -348,9 +368,25 @@ export function startTrendScanner(onSignal: SignalHandler): void {
       return;
     }
     scanning = true;
+    // Belt-and-suspenders on top of gtFetch's own timeout: if a cycle
+    // somehow still hangs (e.g. inside onSignal's conviction/risk-check RPC
+    // calls, which don't have their own timeout), this guarantees `scanning`
+    // gets cleared eventually instead of permanently blocking every future
+    // tick with zero further log output — exactly the silent-hang symptom
+    // that motivated adding this.
+    const watchdog = setTimeout(() => {
+      if (scanning) {
+        console.error(
+          '[trendScanner] a scan cycle has been running for over 3 minutes — force-clearing so future cycles aren\'t permanently blocked. ' +
+            'This points at a hang somewhere beyond the GeckoTerminal fetch (which has its own 15s timeout), worth investigating if it recurs.'
+        );
+        scanning = false;
+      }
+    }, 3 * 60 * 1000);
     scanOnce(onSignal, tracked)
       .catch((err) => console.error('[trendScanner] scan cycle failed', err))
       .finally(() => {
+        clearTimeout(watchdog);
         scanning = false;
       });
   };
