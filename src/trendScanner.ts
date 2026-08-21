@@ -126,12 +126,39 @@ async function scanOnce(onSignal: SignalHandler, tracked: Map<string, number>): 
     return;
   }
 
+  // The trending_pools call is the very first thing every cycle does — if
+  // it 429s, the whole cycle previously died instantly with no retry. In
+  // practice this started happening on essentially every cycle (the shared
+  // egress IP being saturated even before we've made a single OHLCV call),
+  // which meant most cycles were producing zero signals no matter how
+  // conservative the OHLCV-side pacing was. A couple of short retries
+  // absorbs a transient hit; if it's still failing after that, the IP is
+  // genuinely throttled right now and the same cooldown used after an
+  // OHLCV-side abort kicks in, so we stop hammering it every interval.
   let json: any;
-  try {
-    json = await gtFetch('/networks/solana/trending_pools?include=base_token,quote_token');
-  } catch (err) {
-    console.warn(`[trendScanner] failed to fetch trending pools: ${(err as Error).message}`);
-    return;
+  let attempt = 0;
+  for (;;) {
+    try {
+      json = await gtFetch('/networks/solana/trending_pools?include=base_token,quote_token');
+      break;
+    } catch (err) {
+      const message = (err as Error).message;
+      attempt += 1;
+      if (message.includes('429') && attempt <= 2) {
+        const retryDelay = config.geckoTerminalRequestDelayMs * attempt * 2;
+        console.warn(`[trendScanner] trending_pools fetch 429'd (attempt ${attempt}/2) — retrying in ${retryDelay}ms`);
+        await sleep(retryDelay);
+        continue;
+      }
+      console.warn(`[trendScanner] failed to fetch trending pools: ${message}`);
+      if (message.includes('429')) {
+        throttledUntil = Date.now() + config.trendScanIntervalSec * 1000 * config.trendThrottleCooldownCycles;
+        console.warn(
+          `[trendScanner] backing off — skipping the next ${config.trendThrottleCooldownCycles} scan cycle(s) entirely (until ${new Date(throttledUntil).toISOString()})`
+        );
+      }
+      return;
+    }
   }
 
   const pools: any[] = json?.data ?? [];
