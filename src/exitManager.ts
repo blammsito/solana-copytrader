@@ -131,7 +131,15 @@ async function attemptPartialScaleOut(pos: Position, now: number, pnlRatio: numb
  *     falls back more than TRAILING_STOP_PCT from its peak-ever value.
  *   - stop-loss:      current value <= entry cost * (1 - STOP_LOSS_PCT) —
  *     only while the trailing stop hasn't armed yet.
- *   - max hold:       position has been open longer than MAX_HOLD_MINUTES
+ *   - max hold:       position has been open longer than MAX_HOLD_MINUTES —
+ *     but only while it's never shown real profit (trailing stop never
+ *     armed) and was never partially scaled out. A position that's actually
+ *     proven itself (armed the trailing stop, or already banked a partial
+ *     take-profit) is left to ride and exit only via take-profit/trailing
+ *     stop/stop-loss above, instead of getting force-sold — sometimes at a
+ *     loss — just because a clock ran out. Max-hold now only exists to cap
+ *     how long a genuinely stagnant position (one that never got anywhere)
+ *     sits open tying up capital.
  *
  * A position that's already been partially scaled out never uses the fixed
  * stop-loss again — its floor becomes breakeven (or the trailing stop, if
@@ -223,8 +231,14 @@ export async function checkExits(): Promise<void> {
       reason = `take-profit: +${((pnlRatio - 1) * 100).toFixed(1)}%`;
     } else if (floorRatio !== null && pnlRatio <= floorRatio) {
       reason = `${floorLabel}: ${((pnlRatio - 1) * 100).toFixed(1)}% (peak was +${((peakPnlRatio - 1) * 100).toFixed(1)}%)`;
-    } else if (holdMinutes >= config.maxHoldMinutes) {
-      reason = `max hold time: ${holdMinutes.toFixed(1)} min (${((pnlRatio - 1) * 100).toFixed(1)}% at exit)`;
+    } else if (holdMinutes >= config.maxHoldMinutes && !trailingArmed && !pos.scaledOut) {
+      // Only force-close on time if this position never proved itself —
+      // never reached trailingStopArmPct profit and was never scaled out.
+      // Once it has, trailingArmed/scaledOut being true routes it through
+      // the floorRatio branch above instead: it keeps riding and only exits
+      // when it actually pulls back, not because 60 minutes happened to
+      // pass while it was sitting on a real gain.
+      reason = `max hold time: ${holdMinutes.toFixed(1)} min (${((pnlRatio - 1) * 100).toFixed(1)}% at exit, never armed trailing stop)`;
     }
 
     if (!reason) continue;
@@ -350,6 +364,6 @@ export function startExitMonitor(): void {
       `(take-profit +${(config.takeProfitPct * 100).toFixed(0)}%, ` +
       `stop-loss -${(config.stopLossPct * 100).toFixed(0)}% until +${(config.trailingStopArmPct * 100).toFixed(0)}% ` +
       `then trailing -${(config.trailingStopPct * 100).toFixed(0)}% from peak${scaleOutNote}, ` +
-      `max hold ${config.maxHoldMinutes} min)`
+      `max hold ${config.maxHoldMinutes} min for positions that never armed the trailing stop)`
   );
 }
