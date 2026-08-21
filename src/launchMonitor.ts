@@ -36,6 +36,17 @@ interface Candidate {
   // marketCapSol arrives.
   peakMarketCapSol: number | null;
   lastMarketCapSol: number | null;
+  // Sum of buy solAmount that landed within config.snipeBurstWindowSec of
+  // startedAt. Research on Solana memecoin sniping found deployer-funded
+  // sniper wallets routinely buy within the same block (sub-second to a
+  // few seconds) of a token's creation, well before any organic momentum
+  // exists — a pattern the existing wash-trading and unique-buyer checks
+  // can't catch, since sniper wallets are typically genuinely distinct
+  // addresses that never sell within the window (so they look like clean,
+  // broad-based demand). Comparing this against total volumeSol at
+  // trigger time (see earlyBurstVolumeSharePct) surfaces that pattern
+  // directly. See conviction.ts's use of this value.
+  earlyBurstVolumeSol: number;
 }
 
 interface Thresholds {
@@ -150,10 +161,17 @@ export function startLaunchMonitor(onSignal: SignalHandler) {
         ? (c.peakMarketCapSol - c.lastMarketCapSol) / c.peakMarketCapSol
         : 0;
 
+    // See earlyBurstVolumeSol's comment on Candidate — what fraction of
+    // total buy volume arrived within the first snipeBurstWindowSec of this
+    // token's life, vs. building up over the rest of the window. High share
+    // here looks like a same-block/near-instant sniper buy-in rather than
+    // organic momentum accumulating over time.
+    const earlyBurstVolumeSharePct = c.volumeSol > 0 ? c.earlyBurstVolumeSol / c.volumeSol : 0;
+
     console.log(
       `[launchMonitor] MOMENTUM signal (${c.source}): ${c.mint} — ${c.buyCount} buys / ${c.volumeSol.toFixed(3)} SOL / ` +
         `${uniqueBuyers} unique buyers / ${(roundTripVolumeShare * 100).toFixed(0)}% round-trip volume / ` +
-        `${(pullbackFromPeakPct * 100).toFixed(1)}% off peak ` +
+        `${(pullbackFromPeakPct * 100).toFixed(1)}% off peak / ${(earlyBurstVolumeSharePct * 100).toFixed(0)}% within ${config.snipeBurstWindowSec}s burst ` +
         `within ${elapsedSec.toFixed(1)}s of ${c.source === 'launch' ? 'launch' : 'migration'}`
     );
 
@@ -169,6 +187,7 @@ export function startLaunchMonitor(onSignal: SignalHandler) {
         uniqueBuyers,
         roundTripVolumeShare,
         pullbackFromPeakPct,
+        earlyBurstVolumeSharePct,
         source: c.source,
       },
     };
@@ -202,6 +221,7 @@ export function startLaunchMonitor(onSignal: SignalHandler) {
       wallets: new Map(),
       peakMarketCapSol: null,
       lastMarketCapSol: null,
+      earlyBurstVolumeSol: 0,
       windowTimer: setTimeout(
         () => dropCandidate(mint, `momentum window (${t.windowSec}s) elapsed without threshold`),
         t.windowSec * 1000
@@ -273,6 +293,10 @@ export function startLaunchMonitor(onSignal: SignalHandler) {
     const solAmount = Number(msg.solAmount ?? 0);
     c.buyCount += 1;
     c.volumeSol += solAmount;
+
+    if (Date.now() - c.startedAt <= config.snipeBurstWindowSec * 1000) {
+      c.earlyBurstVolumeSol += solAmount;
+    }
 
     if (trader) {
       const activity = c.wallets.get(trader) ?? { buys: 0, sells: 0, buyVolumeSol: 0 };

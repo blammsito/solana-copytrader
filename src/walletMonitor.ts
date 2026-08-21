@@ -32,6 +32,16 @@ export interface BuySignal {
     // already fading before we'd even buy. See maxEntryPullbackFromPeakPct
     // in config.ts and the comment on trigger() in launchMonitor.ts.
     pullbackFromPeakPct: number;
+    // Fraction (0-1) of total buy volume that landed within
+    // config.snipeBurstWindowSec of the token's creation/tracking start.
+    // Research on Solana memecoin sniping found deployer-funded sniper
+    // wallets routinely buy within the same block as launch, well before
+    // organic momentum exists — a pattern distinct from (and not caught
+    // by) the wash-trading or unique-buyer checks, since sniper wallets are
+    // typically genuinely distinct addresses that hold rather than
+    // round-trip within the window. See maxEarlyBurstVolumeSharePct in
+    // config.ts.
+    earlyBurstVolumeSharePct: number;
     // Which of launchMonitor.ts's two detection paths produced this signal
     // — a brand-new pump.fun launch, or a token that already migrated to a
     // real AMM showing fresh renewed momentum. Purely for logging/position

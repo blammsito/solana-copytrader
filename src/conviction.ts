@@ -168,7 +168,8 @@ export async function evaluateConviction(signal: BuySignal): Promise<ConvictionR
     };
   }
 
-  const { buyCount, volumeSol, uniqueBuyers, roundTripVolumeShare, pullbackFromPeakPct } = signal.momentum;
+  const { buyCount, volumeSol, uniqueBuyers, roundTripVolumeShare, pullbackFromPeakPct, earlyBurstVolumeSharePct } =
+    signal.momentum;
 
   if (roundTripVolumeShare > config.maxRoundTripVolumeSharePct) {
     return {
@@ -216,6 +217,31 @@ export async function evaluateConviction(signal: BuySignal): Promise<ConvictionR
       reason: `price already pulled back ${(pullbackFromPeakPct * 100).toFixed(1)}% off its peak within the momentum window (max ${(
         config.maxEntryPullbackFromPeakPct * 100
       ).toFixed(0)}%) — looks like buying a move that's already fading, not one still building`,
+      positionSizeSol: fallbackSize,
+      score: 0,
+      breakdown: { momentum: 0, holderHealth: 1, washHealth: 1, creatorPct: null, top10Pct: null },
+    };
+  }
+
+  // "Sniper burst" gate: research on Solana memecoin sniping found
+  // deployer-funded sniper wallets routinely buy within the same block as
+  // a token's creation — seconds before any organic interest could
+  // plausibly exist — with one study finding 87% of these same-block
+  // snipes profitable, extracted from later buyers. That pattern shows up
+  // as buy volume heavily front-loaded into the first few seconds of the
+  // window rather than accumulating over it, and it's invisible to the
+  // wash-trading and unique-buyer checks above since sniper wallets are
+  // usually genuinely distinct addresses that hold (not round-trip) within
+  // the window. This is the closest a momentum-reactive bot can get to
+  // spotting "we're buying from snipers already in profit."
+  if (earlyBurstVolumeSharePct > config.maxEarlyBurstVolumeSharePct) {
+    return {
+      passed: false,
+      reason: `${(earlyBurstVolumeSharePct * 100).toFixed(0)}% of buy volume landed within the first ${
+        config.snipeBurstWindowSec
+      }s (max ${(config.maxEarlyBurstVolumeSharePct * 100).toFixed(
+        0
+      )}%) — looks like a same-block sniper buy-in rather than organically building momentum`,
       positionSizeSol: fallbackSize,
       score: 0,
       breakdown: { momentum: 0, holderHealth: 1, washHealth: 1, creatorPct: null, top10Pct: null },

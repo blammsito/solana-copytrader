@@ -179,6 +179,17 @@ export interface Config {
   // momentum threshold doesn't mean price is still climbing right now; this
   // catches the case where it already peaked and is fading.
   maxEntryPullbackFromPeakPct: number;
+  // Window (seconds, from token creation/tracking start) within which buy
+  // volume is counted toward the "sniper burst" gate below. Research on
+  // Solana memecoin sniping found deployer-funded sniper wallets typically
+  // buy within the same block as launch — a few seconds is generous enough
+  // to catch that pattern without flagging every fast-but-organic launch.
+  snipeBurstWindowSec: number;
+  // Hard-reject (in conviction.ts) if more than this fraction of total buy
+  // volume landed within snipeBurstWindowSec — looks like a coordinated/
+  // insider same-block buy-in rather than momentum building organically
+  // over the full window.
+  maxEarlyBurstVolumeSharePct: number;
 }
 
 function loadConfig(): Config {
@@ -288,6 +299,8 @@ function loadConfig(): Config {
     maxTopHolderConcentrationPct: Number(process.env.MAX_TOP_HOLDER_CONCENTRATION_PCT ?? 0.3),
     maxRoundTripVolumeSharePct: Number(process.env.MAX_ROUND_TRIP_VOLUME_SHARE_PCT ?? 0.5),
     maxEntryPullbackFromPeakPct: Number(process.env.MAX_ENTRY_PULLBACK_FROM_PEAK_PCT ?? 0.15),
+    snipeBurstWindowSec: Number(process.env.SNIPE_BURST_WINDOW_SEC ?? 3),
+    maxEarlyBurstVolumeSharePct: Number(process.env.MAX_EARLY_BURST_VOLUME_SHARE_PCT ?? 0.65),
   };
 }
 
