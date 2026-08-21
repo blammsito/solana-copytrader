@@ -53,6 +53,12 @@ export interface Position {
   // exitManager.ts). Prevents scaling out twice and switches the remaining
   // runner's downside floor from the fixed stop-loss to breakeven-or-better.
   scaledOut?: boolean;
+  // Manual override set via the control API (controlServer.ts). While true,
+  // exitManager skips this position entirely — no take-profit, stop-loss,
+  // trailing stop, or even max-hold-time will close it — until it's
+  // released. Intended for "I want to keep this one regardless of the
+  // bot's rules" cases; doesn't pause new buys or affect any other position.
+  held?: boolean;
 }
 
 interface PositionsState {
@@ -118,6 +124,35 @@ export function updatePosition(mint: string, patch: Partial<Position>) {
   if (!pos) return;
   Object.assign(pos, patch);
   saveState(state);
+}
+
+/**
+ * Marks a tracked position as held (see Position.held) — exitManager will
+ * skip it entirely until releasePosition() is called. Returns false if the
+ * mint isn't currently an open position, so callers (controlServer.ts) can
+ * report a clear 404 instead of silently no-op'ing.
+ */
+export function holdPosition(mint: string): boolean {
+  const state = loadState();
+  const pos = state.positions.find((p) => p.mint === mint);
+  if (!pos) return false;
+  pos.held = true;
+  saveState(state);
+  return true;
+}
+
+/**
+ * Clears a position's held flag so exitManager resumes normal automatic
+ * exit management for it. Returns false if the mint isn't currently an open
+ * position.
+ */
+export function releasePosition(mint: string): boolean {
+  const state = loadState();
+  const pos = state.positions.find((p) => p.mint === mint);
+  if (!pos) return false;
+  pos.held = false;
+  saveState(state);
+  return true;
 }
 
 /**

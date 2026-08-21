@@ -90,6 +90,13 @@ export interface Config {
   // mobile app) on every real buy/sell. Optional — if unset, notifications
   // are silently skipped so this never blocks the bot from running.
   discordWebhookUrl: string;
+  // Shared secret for the small HTTP control API (controlServer.ts) that
+  // lets you manually put a specific open position "on hold" — exitManager
+  // skips it entirely (no take-profit/stop-loss/trailing/max-hold) until
+  // you release it. Soft-required: if unset, the control endpoints refuse
+  // every request with a clear error rather than the bot crashing on boot,
+  // since this feature is optional.
+  controlApiSecret: string;
   // ==== Own-trader entry strategy (launchMonitor.ts) ====
   // The bot no longer mirrors specific wallets — it watches every new
   // pump.fun launch itself via PumpPortal's websocket feed and buys into
@@ -205,6 +212,7 @@ function loadConfig(): Config {
     stopLossGraceSec: Number(process.env.STOP_LOSS_GRACE_SEC ?? 45),
     exitCheckStaggerMs: Number(process.env.EXIT_CHECK_STAGGER_MS ?? 400),
     discordWebhookUrl: process.env.DISCORD_WEBHOOK_URL ?? '',
+    controlApiSecret: process.env.CONTROL_API_SECRET ?? '',
     // Soft-required, not requireEnv(): standalone scripts (report.ts,
     // vetSniperWallets.ts, convictionReport.ts) all import config.ts but
     // never touch PumpPortal, and shouldn't crash just because a local
@@ -223,6 +231,12 @@ function loadConfig(): Config {
 }
 
 export const config = loadConfig();
+
+if (!config.controlApiSecret) {
+  console.warn(
+    '[config] CONTROL_API_SECRET is not set — the hold/release control API will refuse all requests until you set it.'
+  );
+}
 
 if (!config.dryRun) {
   console.warn(

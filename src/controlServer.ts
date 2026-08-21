@@ -1,0 +1,91 @@
+import express from 'express';
+import { config } from './config';
+import { getOpenPositions, holdPosition, releasePosition } from './positionTracker';
+
+/**
+ * Small HTTP control API for manually overriding the bot's automatic exit
+ * management on a specific position — "I want to keep holding this one
+ * regardless of what take-profit/stop-loss/trailing/max-hold would
+ * otherwise do." Doesn't pause new buys or touch any other position.
+ *
+ * Protected by a shared secret (CONTROL_API_SECRET) rather than any real
+ * auth scheme, since this is a single-operator bot exposed on Railway's
+ * public domain — every request must send it either as a Bearer token
+ * (Authorization: Bearer <secret>) or a ?key= query param, whichever's more
+ * convenient (a query param is easier to hit from a phone browser; a header
+ * is easier from curl/scripts).
+ *
+ * Endpoints:
+ *   GET  /positions                 — list open positions (mint, entry cost,
+ *                                      bought-at, held/scaledOut/dryRun flags)
+ *   POST /positions/:mint/hold      — set held=true; exitManager skips it
+ *   POST /positions/:mint/release   — clear held; resumes normal management
+ */
+function checkAuth(req: express.Request, res: express.Response): boolean {
+  if (!config.controlApiSecret) {
+    res
+      .status(503)
+      .json({ error: 'CONTROL_API_SECRET is not configured on the server — set it and redeploy to enable this API.' });
+    return false;
+  }
+
+  const authHeader = req.header('authorization') ?? '';
+  const bearerMatch = /^Bearer\s+(.+)$/i.exec(authHeader);
+  const provided = bearerMatch ? bearerMatch[1] : String(req.query.key ?? '');
+
+  if (provided !== config.controlApiSecret) {
+    res.status(401).json({ error: 'unauthorized' });
+    return false;
+  }
+  return true;
+}
+
+export function startControlServer(): void {
+  const app = express();
+
+  app.get('/health', (_req, res) => res.status(200).send('ok'));
+
+  app.get('/positions', (req, res) => {
+    if (!checkAuth(req, res)) return;
+    const positions = getOpenPositions().map((p) => ({
+      mint: p.mint,
+      entrySolSpent: p.entrySolSpent,
+      boughtAt: p.boughtAt,
+      dryRun: p.dryRun,
+      held: !!p.held,
+      scaledOut: !!p.scaledOut,
+      peakPnlRatio: p.peakPnlRatio ?? null,
+    }));
+    res.json({ positions });
+  });
+
+  app.post('/positions/:mint/hold', (req, res) => {
+    if (!checkAuth(req, res)) return;
+    const { mint } = req.params;
+    if (!holdPosition(mint)) {
+      res.status(404).json({ error: `no open position tracked for ${mint}` });
+      return;
+    }
+    console.log(`[controlServer] ${mint} placed ON HOLD via control API — exitManager will skip it until released`);
+    res.json({ mint, held: true });
+  });
+
+  app.post('/positions/:mint/release', (req, res) => {
+    if (!checkAuth(req, res)) return;
+    const { mint } = req.params;
+    if (!releasePosition(mint)) {
+      res.status(404).json({ error: `no open position tracked for ${mint}` });
+      return;
+    }
+    console.log(`[controlServer] ${mint} RELEASED from hold via control API — exitManager will resume managing it`);
+    res.json({ mint, held: false });
+  });
+
+  app.listen(config.webhookPort, () => {
+    console.log(
+      `[controlServer] listening on port ${config.webhookPort} ` +
+        `(GET /positions, POST /positions/:mint/hold, POST /positions/:mint/release)` +
+        (config.controlApiSecret ? '' : ' — CONTROL_API_SECRET unset, all requests will be refused')
+    );
+  });
+}

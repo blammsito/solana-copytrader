@@ -7,6 +7,7 @@ import { checkSpendAllowed, recordBuy } from './spendTracker';
 import { executeBuy } from './executor';
 import { addPosition, hasOpenPosition } from './positionTracker';
 import { startExitMonitor } from './exitManager';
+import { startControlServer } from './controlServer';
 import { notifyBuy } from './notify';
 
 console.log('='.repeat(60));
@@ -139,3 +140,4 @@ async function handleSignal(signal: BuySignal) {
 
 startLaunchMonitor(handleSignal);
 startExitMonitor();
+startControlServer();

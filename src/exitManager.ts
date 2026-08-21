@@ -150,6 +150,13 @@ export async function checkExits(): Promise<void> {
 
   for (let i = 0; i < positions.length; i++) {
     const pos = positions[i];
+
+    // Manual override via the control API (controlServer.ts) — skip this
+    // position entirely, before it costs a Jupiter quote call or a stagger
+    // delay slot. Overrides every exit condition, including max-hold-time,
+    // by design: "held" means the bot's rules don't apply until released.
+    if (pos.held) continue;
+
     if (i > 0) await sleep(config.exitCheckStaggerMs);
 
     const result = await previewSellValue(pos.mint, pos.tokensAmountRaw);
