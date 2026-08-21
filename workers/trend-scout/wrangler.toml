@@ -1,0 +1,26 @@
+name = "geckoterminal-trend-scout"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+
+# Runs every 5 minutes. This Worker isn't on Railway's throttled shared IP,
+# so it can afford a tighter cadence and more OHLCV calls per run than the
+# in-process scanner (trendScanner.ts) currently running on the bot itself —
+# the two run independently and side by side; the bot's own duplicate-buy
+# guards (mintsInFlight, hasOpenPosition, the permanent re-entry-loss ban)
+# make it safe for both to occasionally find the same signal.
+[triggers]
+crons = ["*/5 * * * *"]
+
+# Created via `wrangler kv:namespace create TREND_KV` — replace the id
+# below with the one that command prints out. Used to remember which mints
+# this Worker has already signaled recently, so a token that keeps
+# qualifying doesn't get re-sent to the bot every single run.
+[[kv_namespaces]]
+binding = "TREND_KV"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# Not secret — your bot's public Railway domain. The actual credential
+# (BOT_SECRET) is set separately via `wrangler secret put BOT_SECRET` so it
+# never ends up committed to git in this file.
+[vars]
+BOT_URL = "https://solana-copytrader-production.up.railway.app"

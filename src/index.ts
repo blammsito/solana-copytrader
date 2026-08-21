@@ -159,4 +159,4 @@ async function handleSignal(signal: BuySignal) {
 
 startTrendScanner(handleSignal);
 startExitMonitor();
-startControlServer();
+startControlServer(handleSignal);
