@@ -85,7 +85,22 @@ function analyzeTrend(candles: Candle[]): TrendAnalysis {
   };
 }
 
+// Set once a scan cycle hits config.trendMax429BeforeAbort — GeckoTerminal
+// (or, more likely, Railway's shared egress IP as a whole) is throttling
+// hard enough that retrying at the normal cadence just burns more of the
+// call budget on guaranteed failures. Skipping the next cycle entirely
+// gives whatever shared rate-limit window is in effect real time to reset,
+// instead of probing it again 1-3 minutes later at full intensity.
+let throttledUntil = 0;
+
 async function scanOnce(onSignal: SignalHandler, tracked: Map<string, number>): Promise<void> {
+  if (Date.now() < throttledUntil) {
+    console.warn(
+      `[trendScanner] skipping this cycle — backing off until ${new Date(throttledUntil).toISOString()} after recent heavy rate-limiting`
+    );
+    return;
+  }
+
   let json: any;
   try {
     json = await gtFetch('/networks/solana/trending_pools?include=base_token,quote_token');
@@ -97,6 +112,19 @@ async function scanOnce(onSignal: SignalHandler, tracked: Map<string, number>): 
   const pools: any[] = json?.data ?? [];
   const included: any[] = json?.included ?? [];
   const tokenById = new Map(included.filter((r) => r.type === 'token').map((r) => [r.id, r]));
+
+  // Spend the limited OHLCV call budget on the biggest movers first. Every
+  // pool here already carries price_change_percentage from the free
+  // trending_pools response, so this is a zero-cost prioritization — if
+  // GeckoTerminal throttles us partway through the loop (see the
+  // consecutive-429 abort below), we've already used our calls on the most
+  // promising candidates instead of whichever happened to be listed first.
+  const changeProxy = (pool: any): number => {
+    const pc = pool?.attributes?.price_change_percentage ?? {};
+    const v = Number(pc.h6 ?? pc.h24 ?? pc.h1 ?? 0);
+    return Number.isFinite(v) ? v : 0;
+  };
+  pools.sort((a, b) => changeProxy(b) - changeProxy(a));
 
   const now = Date.now();
   let ohlcvCallsThisCycle = 0;
@@ -149,6 +177,10 @@ async function scanOnce(onSignal: SignalHandler, tracked: Map<string, number>): 
         if (consecutive429Count >= config.trendMax429BeforeAbort) {
           console.warn(
             `[trendScanner] ${consecutive429Count} consecutive rate-limit errors — GeckoTerminal is throttling this IP hard right now, ending this scan cycle early rather than continuing to spend the call budget on failures`
+          );
+          throttledUntil = Date.now() + config.trendScanIntervalSec * 1000 * config.trendThrottleCooldownCycles;
+          console.warn(
+            `[trendScanner] backing off — skipping the next ${config.trendThrottleCooldownCycles} scan cycle(s) entirely (until ${new Date(throttledUntil).toISOString()})`
           );
           break;
         }
