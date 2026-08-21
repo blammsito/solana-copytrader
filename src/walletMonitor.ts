@@ -26,6 +26,11 @@ export interface BuySignal {
     // wallets which also sold within the same window — see
     // maxRoundTripVolumeSharePct in config.ts.
     roundTripVolumeShare: number;
+    // Which of launchMonitor.ts's two detection paths produced this signal
+    // — a brand-new pump.fun launch, or a token that already migrated to a
+    // real AMM showing fresh renewed momentum. Purely for logging/position
+    // provenance; conviction.ts scores both identically.
+    source: 'launch' | 'migration';
   };
 }
 

@@ -19,6 +19,10 @@ console.log(
     `min ${config.momentumMinUniqueBuyers} unique buyers (holder-backed gate)`
 );
 console.log(
+  `  + stable/migrated entry strategy — ${config.stableMomentumMinBuys} buys + ` +
+    `${config.stableMomentumMinVolumeSol} SOL within ${config.stableMomentumWindowSec}s of migrating to a real AMM`
+);
+console.log(
   `Position size: ${config.minPositionSizeSol}-${config.maxPositionSizeSol} SOL (conviction-scaled) | ` +
     `Daily cap: ${config.dailySpendCapSol} SOL`
 );

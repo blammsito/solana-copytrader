@@ -139,6 +139,23 @@ export interface Config {
   // once. Each tracked token costs metered PumpPortal trade events, so this
   // bounds both cost and memory during a burst of new launches.
   momentumMaxConcurrent: number;
+  // ==== "Stable" entry strategy: tokens that already migrated off the
+  // pump.fun bonding curve to a real AMM (Raydium/PumpSwap). Runs alongside
+  // the brand-new-launch strategy above on the same PumpPortal connection
+  // (subscribeMigration) — a second, independent signal source feeding the
+  // same conviction/risk/exit pipeline. A migration itself already proves
+  // the token raised enough real buy pressure to graduate; this then looks
+  // for a fresh burst of renewed momentum on the now-real pool, same
+  // buys+volume+unique-buyers logic as the launch strategy but with looser
+  // per-signal thresholds (a migrated pool's baseline activity is bigger
+  // than a bonding-curve token's first seconds) and a longer window (less
+  // frantic than sniping a token seconds old).
+  stableMomentumWindowSec: number;
+  stableMomentumMinBuys: number;
+  stableMomentumMinVolumeSol: number;
+  // Separate concurrency cap from momentumMaxConcurrent — migrations are far
+  // less frequent than new launches, so this can reasonably be smaller.
+  stableMaxConcurrent: number;
   // ==== Conviction scoring (conviction.ts) ====
   // Hard-reject a buy if the creator wallet holds more than this fraction
   // of total supply outright — a large personal stash outside the bonding
@@ -256,6 +273,10 @@ function loadConfig(): Config {
     momentumMinVolumeSol: Number(process.env.MOMENTUM_MIN_VOLUME_SOL ?? 4),
     momentumMinUniqueBuyers: Number(process.env.MOMENTUM_MIN_UNIQUE_BUYERS ?? 6),
     momentumMaxConcurrent: Number(process.env.MOMENTUM_MAX_CONCURRENT ?? 40),
+    stableMomentumWindowSec: Number(process.env.STABLE_MOMENTUM_WINDOW_SEC ?? 60),
+    stableMomentumMinBuys: Number(process.env.STABLE_MOMENTUM_MIN_BUYS ?? 15),
+    stableMomentumMinVolumeSol: Number(process.env.STABLE_MOMENTUM_MIN_VOLUME_SOL ?? 8),
+    stableMaxConcurrent: Number(process.env.STABLE_MAX_CONCURRENT ?? 20),
     maxCreatorHoldingPct: Number(process.env.MAX_CREATOR_HOLDING_PCT ?? 0.05),
     maxTopHolderConcentrationPct: Number(process.env.MAX_TOP_HOLDER_CONCENTRATION_PCT ?? 0.3),
     maxRoundTripVolumeSharePct: Number(process.env.MAX_ROUND_TRIP_VOLUME_SHARE_PCT ?? 0.5),
