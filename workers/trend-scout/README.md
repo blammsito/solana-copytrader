@@ -24,12 +24,15 @@ this folder (`workers/trend-scout`).
    ```
 
 2. **Create the KV namespace** (stores which mints were recently signaled,
-   so the same token isn't re-sent every 5 minutes):
+   so the same token isn't re-sent every 5 minutes). Note: newer wrangler
+   versions dropped the colon — it's `kv namespace create`, not
+   `kv:namespace create`:
    ```bash
-   npx wrangler kv:namespace create TREND_KV
+   npx wrangler kv namespace create TREND_KV
    ```
-   This prints an `id = "..."`. Copy it into `wrangler.toml`, replacing
-   `REPLACE_WITH_KV_NAMESPACE_ID`.
+   This prints an `id = "..."`. Copy it into `wrangler.toml`'s
+   `[[kv_namespaces]]` block. (If the id scrolls off/gets cut off in your
+   terminal, `npx wrangler kv namespace list` shows it again.)
 
 3. **Set your bot's control-API secret as a Worker secret** (same value as
    `CONTROL_API_SECRET` in the bot's Railway environment — never gets

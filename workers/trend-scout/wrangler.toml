@@ -11,13 +11,12 @@ compatibility_date = "2026-08-01"
 [triggers]
 crons = ["*/5 * * * *"]
 
-# Created via `wrangler kv:namespace create TREND_KV` — replace the id
-# below with the one that command prints out. Used to remember which mints
-# this Worker has already signaled recently, so a token that keeps
-# qualifying doesn't get re-sent to the bot every single run.
+# Created via `wrangler kv namespace create TREND_KV`. Used to remember
+# which mints this Worker has already signaled recently, so a token that
+# keeps qualifying doesn't get re-sent to the bot every single run.
 [[kv_namespaces]]
 binding = "TREND_KV"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "ba3aa4df2ea442e186c71879997b3798"
 
 # Not secret — your bot's public Railway domain. The actual credential
 # (BOT_SECRET) is set separately via `wrangler secret put BOT_SECRET` so it
