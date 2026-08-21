@@ -52,6 +52,19 @@ async function gtFetch(path: string): Promise<any> {
  * - aboveFloor: the current price must still be meaningfully above where
  *   the window started, so a "dip" can't be a near-total round-trip back
  *   to baseline wearing a pullback's clothing.
+ * - hasRealStructure: standard momentum-trading practice treats a single
+ *   outsized candle carrying an entire "trend" as unreliable (that's a
+ *   spike, closer to a fresh pump.fun launch pattern than a real uptrend) —
+ *   higher-highs/higher-lows structure built from several up candles is
+ *   what separates a real trend from one lucky print. Requires a minimum
+ *   fraction of the run-up leg's candles to have actually closed up.
+ * - isQuietPullback: volume analysis consistently treats a pullback that
+ *   trades on lighter volume than the rally that preceded it as a healthy
+ *   pause (buyers stepping back), while a pullback on volume as heavy or
+ *   heavier than the run-up looks like real distribution/selling pressure
+ *   — a classic volume/price divergence warning sign. Compares average
+ *   candle volume across the run-up leg vs. the pullback leg (both already
+ *   present in the OHLCV data we fetch — no extra API calls).
  */
 function analyzeTrend(candles: Candle[]): TrendAnalysis {
   const startClose = candles[0].close;
@@ -78,8 +91,20 @@ function analyzeTrend(candles: Candle[]): TrendAnalysis {
   const isGoodDip =
     pullbackFromPeakPct >= config.trendMinPullbackPct && pullbackFromPeakPct <= config.trendMaxPullbackPct;
 
+  const runUpCandles = candles.slice(0, peakIdx + 1);
+  const upCandleCount = runUpCandles.filter((c) => c.close > c.open).length;
+  const upCandleRatio = runUpCandles.length > 0 ? upCandleCount / runUpCandles.length : 0;
+  const hasRealStructure = upCandleRatio >= config.trendMinUpCandleRatio;
+
+  const pullbackCandles = candles.slice(peakIdx);
+  const avgVolume = (cs: Candle[]) => (cs.length > 0 ? cs.reduce((sum, c) => sum + c.volume, 0) / cs.length : 0);
+  const runUpAvgVolume = avgVolume(runUpCandles);
+  const pullbackAvgVolume = avgVolume(pullbackCandles);
+  const isQuietPullback =
+    runUpAvgVolume <= 0 || pullbackAvgVolume <= runUpAvgVolume * config.trendMaxPullbackVolumeRatio;
+
   return {
-    qualifies: isUptrend && isGoodDip && aboveFloor,
+    qualifies: isUptrend && isGoodDip && aboveFloor && hasRealStructure && isQuietPullback,
     overallGainPct,
     pullbackFromPeakPct,
   };
@@ -149,6 +174,23 @@ async function scanOnce(onSignal: SignalHandler, tracked: Map<string, number>): 
     const liquidityUsd = Number(attrs.reserve_in_usd ?? 0);
     const volume24hUsd = Number(attrs.volume_usd?.h24 ?? 0);
     if (liquidityUsd < config.trendMinLiquidityUsd || volume24hUsd < config.trendMinVolume24hUsd) continue;
+
+    // Also free from the trending_pools response (GeckoTerminal returns
+    // buy/sell transaction counts per pool per interval — no extra call).
+    // Momentum research consistently ties a real uptrend to net buying
+    // pressure, not just price having drifted up — a pool where recent
+    // sells outnumber buys looks more like topping/distribution than
+    // continuation. Only applied when there's enough recent activity to
+    // trust the ratio; skipped (not rejected) on thin/missing data rather
+    // than risk false rejections on an unconfirmed field shape.
+    const h1Tx = attrs.transactions?.h1;
+    if (h1Tx) {
+      const buys = Number(h1Tx.buys ?? NaN);
+      const sells = Number(h1Tx.sells ?? NaN);
+      if (Number.isFinite(buys) && Number.isFinite(sells) && buys + sells >= config.trendMinHourlyTxCount) {
+        if (buys < sells * config.trendMinBuySellRatio) continue;
+      }
+    }
 
     const poolAddress = attrs.address;
     if (!poolAddress) continue;
@@ -266,9 +308,11 @@ export function startTrendScanner(onSignal: SignalHandler): void {
 
   console.log(
     `[trendScanner] starting — scanning Solana trending pools every ${config.trendScanIntervalSec}s | ` +
-      `requires +${(config.trendMinGainPct * 100).toFixed(0)}% confirmed uptrend then a ` +
-      `${(config.trendMinPullbackPct * 100).toFixed(0)}-${(config.trendMaxPullbackPct * 100).toFixed(0)}% pullback off peak (buy-the-dip) | ` +
-      `min liquidity $${config.trendMinLiquidityUsd}, min 24h volume $${config.trendMinVolume24hUsd}`
+      `requires +${(config.trendMinGainPct * 100).toFixed(0)}% confirmed uptrend (real structure, ` +
+      `min ${(config.trendMinUpCandleRatio * 100).toFixed(0)}% up candles) then a ` +
+      `${(config.trendMinPullbackPct * 100).toFixed(0)}-${(config.trendMaxPullbackPct * 100).toFixed(0)}% quiet-volume pullback off peak (buy-the-dip) | ` +
+      `min liquidity $${config.trendMinLiquidityUsd}, min 24h volume $${config.trendMinVolume24hUsd}, ` +
+      `min 1h buy/sell ratio ${config.trendMinBuySellRatio}`
   );
 
   const run = () => {

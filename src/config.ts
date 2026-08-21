@@ -221,6 +221,28 @@ export interface Config {
   // lookback window started — guards against a near-total round-trip back
   // to baseline being mistaken for a healthy pullback.
   trendMinFloorAboveStartPct: number;
+  // Minimum fraction of run-up-leg candles (window start through the peak)
+  // that must have closed up. Standard momentum-trading practice treats a
+  // single outsized candle carrying an entire "trend" as unreliable — a
+  // spike, not a real higher-highs/higher-lows structure — so this rejects
+  // trends built from one lucky print rather than sustained buying.
+  trendMinUpCandleRatio: number;
+  // How the pullback leg's average candle volume is allowed to compare to
+  // the run-up leg's average candle volume (as a ratio). A pullback that
+  // trades on lighter volume than the rally that preceded it is a healthy
+  // pause; one on volume as heavy or heavier looks like real distribution/
+  // selling pressure rather than buyers just stepping back. 1.0 = pullback
+  // volume can't exceed run-up volume at all.
+  trendMaxPullbackVolumeRatio: number;
+  // Minimum ratio of buys to sells (last 1h, from the free trending_pools
+  // response) required to treat a candidate's recent activity as net
+  // buying pressure rather than distribution. 1.0 = at least as many buys
+  // as sells.
+  trendMinBuySellRatio: number;
+  // Minimum combined buy+sell transaction count (last 1h) before the
+  // trendMinBuySellRatio check is trusted — too few transactions and the
+  // ratio is just noise, so the check is skipped rather than applied.
+  trendMinHourlyTxCount: number;
   // Cheap prefilters applied directly from the trending_pools response
   // (before spending part of the OHLCV call budget on a candidate).
   trendMinLiquidityUsd: number;
@@ -372,6 +394,10 @@ function loadConfig(): Config {
     trendMinPullbackPct: Number(process.env.TREND_MIN_PULLBACK_PCT ?? 0.1),
     trendMaxPullbackPct: Number(process.env.TREND_MAX_PULLBACK_PCT ?? 0.35),
     trendMinFloorAboveStartPct: Number(process.env.TREND_MIN_FLOOR_ABOVE_START_PCT ?? 0.15),
+    trendMinUpCandleRatio: Number(process.env.TREND_MIN_UP_CANDLE_RATIO ?? 0.35),
+    trendMaxPullbackVolumeRatio: Number(process.env.TREND_MAX_PULLBACK_VOLUME_RATIO ?? 1.0),
+    trendMinBuySellRatio: Number(process.env.TREND_MIN_BUY_SELL_RATIO ?? 1.0),
+    trendMinHourlyTxCount: Number(process.env.TREND_MIN_HOURLY_TX_COUNT ?? 10),
     trendMinLiquidityUsd: Number(process.env.TREND_MIN_LIQUIDITY_USD ?? 10000),
     trendMinVolume24hUsd: Number(process.env.TREND_MIN_VOLUME_24H_USD ?? 20000),
     trendMaxOhlcvCallsPerScan: Number(process.env.TREND_MAX_OHLCV_CALLS_PER_SCAN ?? 6),
