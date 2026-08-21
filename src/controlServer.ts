@@ -43,6 +43,16 @@ function checkAuth(req: express.Request, res: express.Response): boolean {
 export function startControlServer(): void {
   const app = express();
 
+  // Allows a static HTML control page (opened directly from a phone, not
+  // served from this domain) to call these endpoints via fetch(). Safe to
+  // leave wide open — every route below is still gated by checkAuth() and
+  // the shared secret above; CORS only controls which origins are allowed
+  // to read the response, not who can guess the secret.
+  app.use((_req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    next();
+  });
+
   app.get('/health', (_req, res) => res.status(200).send('ok'));
 
   app.get('/positions', (req, res) => {
