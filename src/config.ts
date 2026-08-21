@@ -127,6 +127,14 @@ export interface Config {
   // momentumMinBuys — combining count + volume avoids both a wash of tiny
   // dust buys and a single large buy looking like broad interest.
   momentumMinVolumeSol: number;
+  // Hard-reject (in conviction.ts) if fewer than this many distinct wallets
+  // made up the buy activity that triggered the signal. momentumMinBuys
+  // alone can be satisfied by 2-3 wallets buying repeatedly — this is what
+  // actually enforces "holder-backed": real, broad-based demand from many
+  // separate buyers, not volume/count manufactured by a handful of wallets
+  // (which is also a common wash-trading pattern the round-trip check alone
+  // doesn't catch, since these wallets may never sell within the window).
+  momentumMinUniqueBuyers: number;
   // Caps how many just-launched tokens we track buy/volume data for at
   // once. Each tracked token costs metered PumpPortal trade events, so this
   // bounds both cost and memory during a burst of new launches.
@@ -242,8 +250,11 @@ function loadConfig(): Config {
     // process still fails loud rather than silently running with no feed.
     pumpPortalApiKey: process.env.PUMPPORTAL_API_KEY ?? '',
     momentumWindowSec: Number(process.env.MOMENTUM_WINDOW_SEC ?? 20),
-    momentumMinBuys: Number(process.env.MOMENTUM_MIN_BUYS ?? 8),
-    momentumMinVolumeSol: Number(process.env.MOMENTUM_MIN_VOLUME_SOL ?? 3),
+    // Tightened from 8/3 — raises the bar for what counts as "real"
+    // momentum in the first place, before conviction scoring even runs.
+    momentumMinBuys: Number(process.env.MOMENTUM_MIN_BUYS ?? 10),
+    momentumMinVolumeSol: Number(process.env.MOMENTUM_MIN_VOLUME_SOL ?? 4),
+    momentumMinUniqueBuyers: Number(process.env.MOMENTUM_MIN_UNIQUE_BUYERS ?? 6),
     momentumMaxConcurrent: Number(process.env.MOMENTUM_MAX_CONCURRENT ?? 40),
     maxCreatorHoldingPct: Number(process.env.MAX_CREATOR_HOLDING_PCT ?? 0.05),
     maxTopHolderConcentrationPct: Number(process.env.MAX_TOP_HOLDER_CONCENTRATION_PCT ?? 0.3),

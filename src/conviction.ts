@@ -168,7 +168,7 @@ export async function evaluateConviction(signal: BuySignal): Promise<ConvictionR
     };
   }
 
-  const { buyCount, volumeSol, roundTripVolumeShare } = signal.momentum;
+  const { buyCount, volumeSol, uniqueBuyers, roundTripVolumeShare } = signal.momentum;
 
   if (roundTripVolumeShare > config.maxRoundTripVolumeSharePct) {
     return {
@@ -179,6 +179,24 @@ export async function evaluateConviction(signal: BuySignal): Promise<ConvictionR
       positionSizeSol: fallbackSize,
       score: 0,
       breakdown: { momentum: 0, holderHealth: 1, washHealth: 0, creatorPct: null, top10Pct: null },
+    };
+  }
+
+  // "Holder-backed" gate: momentumMinBuys alone can be hit by a couple of
+  // wallets buying repeatedly (without ever selling, so the round-trip
+  // wash-trading check above doesn't catch it). Requiring a minimum spread
+  // of distinct buyers is what actually distinguishes broad-based organic
+  // demand from a small number of wallets manufacturing the appearance of
+  // it. Checked before the RPC-heavy holder-concentration lookup below
+  // since it's free — data already on the signal — so a signal that's
+  // going to be rejected anyway never costs an RPC round trip.
+  if (uniqueBuyers < config.momentumMinUniqueBuyers) {
+    return {
+      passed: false,
+      reason: `only ${uniqueBuyers} unique buyer(s) (min ${config.momentumMinUniqueBuyers}) — momentum looks concentrated in too few wallets to call it real holder-backed demand`,
+      positionSizeSol: fallbackSize,
+      score: 0,
+      breakdown: { momentum: 0, holderHealth: 1, washHealth: 1, creatorPct: null, top10Pct: null },
     };
   }
 
@@ -212,8 +230,15 @@ export async function evaluateConviction(signal: BuySignal): Promise<ConvictionR
     console.warn(`[conviction] holder-concentration check unavailable for ${signal.mint}: ${error} — proceeding without it`);
   }
 
+  // uniqueBuyers is included here (not just as the hard gate above) so
+  // position size itself scales with how broad-based the buying is —
+  // a signal with 20 distinct buyers should size up more than one that
+  // barely cleared the momentumMinUniqueBuyers floor, all else equal.
   const momentumComponent = clamp01(
-    ((buyCount / config.momentumMinBuys - 1) + (volumeSol / config.momentumMinVolumeSol - 1)) / 2
+    ((buyCount / config.momentumMinBuys - 1) +
+      (volumeSol / config.momentumMinVolumeSol - 1) +
+      (uniqueBuyers / config.momentumMinUniqueBuyers - 1)) /
+      3
   );
   const holderHealthComponent =
     creatorPct === null && top10Pct === null

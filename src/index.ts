@@ -15,7 +15,8 @@ console.log('Solana momentum-sniper bot starting');
 console.log(`Mode: ${config.dryRun ? 'DRY RUN (no real trades)' : 'LIVE — real SOL will be spent'}`);
 console.log(
   `Entry strategy: pump.fun launch momentum — ${config.momentumMinBuys} buys + ` +
-    `${config.momentumMinVolumeSol} SOL within ${config.momentumWindowSec}s of launch`
+    `${config.momentumMinVolumeSol} SOL within ${config.momentumWindowSec}s of launch, ` +
+    `min ${config.momentumMinUniqueBuyers} unique buyers (holder-backed gate)`
 );
 console.log(
   `Position size: ${config.minPositionSizeSol}-${config.maxPositionSizeSol} SOL (conviction-scaled) | ` +
