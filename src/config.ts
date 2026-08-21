@@ -1,4 +1,16 @@
 import 'dotenv/config';
+import fs from 'fs';
+import path from 'path';
+
+// Railway (and similar platforms) run the app from an ephemeral container
+// filesystem — anything written under the app's own working directory is
+// wiped on every restart or redeploy. A Railway Volume mounted at /data is
+// the persistent alternative. If one's present, default all on-disk state
+// (positions, trade ledger, spend tracking) there instead of next to the
+// code, so a redeploy can never silently forget an open position again.
+// Falls back to the working directory for local dev, where /data won't
+// exist and persistence across restarts doesn't matter the same way.
+const DATA_DIR = fs.existsSync('/data') ? '/data' : '.';
 
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -197,13 +209,22 @@ function loadConfig(): Config {
     // current free-tier endpoint is api.jup.ag/swap/v1, gated by an API key.
     jupiterApiUrl: process.env.JUPITER_API_URL ?? 'https://api.jup.ag/swap/v1',
     jupiterApiKey,
-    spendStateFile: process.env.SPEND_STATE_FILE ?? 'spend-state.json',
+    // Defaults to DATA_DIR (the persistent /data volume on Railway, if
+    // mounted — see the comment on DATA_DIR above) rather than a bare
+    // filename, so this survives restarts/redeploys instead of silently
+    // resetting to empty on every deploy.
+    spendStateFile: process.env.SPEND_STATE_FILE ?? path.join(DATA_DIR, 'spend-state.json'),
     takeProfitPct: Number(process.env.TAKE_PROFIT_PCT ?? 0.5),
     stopLossPct: Number(process.env.STOP_LOSS_PCT ?? 0.2),
     maxHoldMinutes: Number(process.env.MAX_HOLD_MINUTES ?? 60),
     exitCheckIntervalSec: Number(process.env.EXIT_CHECK_INTERVAL_SEC ?? 30),
-    positionsStateFile: process.env.POSITIONS_STATE_FILE ?? 'positions.json',
-    tradeLedgerFile: process.env.TRADE_LEDGER_FILE ?? 'trades.json',
+    // Same DATA_DIR rationale as spendStateFile above — this is the file
+    // that makes an open position "exist" as far as exitManager is
+    // concerned. Losing it on a redeploy doesn't close the position on-chain
+    // (the wallet still holds the tokens); it just makes the bot forget it
+    // needs to manage it, so it never gets sold by any rule again.
+    positionsStateFile: process.env.POSITIONS_STATE_FILE ?? path.join(DATA_DIR, 'positions.json'),
+    tradeLedgerFile: process.env.TRADE_LEDGER_FILE ?? path.join(DATA_DIR, 'trades.json'),
     trailingStopArmPct: Number(process.env.TRAILING_STOP_ARM_PCT ?? 0.2),
     trailingStopPct: Number(process.env.TRAILING_STOP_PCT ?? 0.15),
     partialTakeProfitPct: Number(process.env.PARTIAL_TAKE_PROFIT_PCT ?? 0.3),
