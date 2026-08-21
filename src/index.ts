@@ -16,7 +16,8 @@ console.log(`Mode: ${config.dryRun ? 'DRY RUN (no real trades)' : 'LIVE — real
 console.log(
   `Entry strategy: pump.fun launch momentum — ${config.momentumMinBuys} buys + ` +
     `${config.momentumMinVolumeSol} SOL within ${config.momentumWindowSec}s of launch, ` +
-    `min ${config.momentumMinUniqueBuyers} unique buyers (holder-backed gate)`
+    `min ${config.momentumMinUniqueBuyers} unique buyers (holder-backed gate), ` +
+    `max ${(config.maxEntryPullbackFromPeakPct * 100).toFixed(0)}% pullback off window peak (anti "buying the top" gate)`
 );
 console.log(
   `  + stable/migrated entry strategy — ${config.stableMomentumMinBuys} buys + ` +

@@ -172,6 +172,13 @@ export interface Config {
   // round-tripping pattern (buy then sell, not just accumulate) is the
   // clearest wash-trading signal available from trade data alone.
   maxRoundTripVolumeSharePct: number;
+  // Hard-reject (in conviction.ts) if the token's marketCapSol has already
+  // pulled back more than this fraction from its peak-within-the-window by
+  // the time the buy/volume threshold was met — see launchMonitor.ts's
+  // trigger() and the "buying the top" gate in conviction.ts. Clearing the
+  // momentum threshold doesn't mean price is still climbing right now; this
+  // catches the case where it already peaked and is fading.
+  maxEntryPullbackFromPeakPct: number;
 }
 
 function loadConfig(): Config {
@@ -280,6 +287,7 @@ function loadConfig(): Config {
     maxCreatorHoldingPct: Number(process.env.MAX_CREATOR_HOLDING_PCT ?? 0.05),
     maxTopHolderConcentrationPct: Number(process.env.MAX_TOP_HOLDER_CONCENTRATION_PCT ?? 0.3),
     maxRoundTripVolumeSharePct: Number(process.env.MAX_ROUND_TRIP_VOLUME_SHARE_PCT ?? 0.5),
+    maxEntryPullbackFromPeakPct: Number(process.env.MAX_ENTRY_PULLBACK_FROM_PEAK_PCT ?? 0.15),
   };
 }
 

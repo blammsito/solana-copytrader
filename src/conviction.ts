@@ -168,7 +168,7 @@ export async function evaluateConviction(signal: BuySignal): Promise<ConvictionR
     };
   }
 
-  const { buyCount, volumeSol, uniqueBuyers, roundTripVolumeShare } = signal.momentum;
+  const { buyCount, volumeSol, uniqueBuyers, roundTripVolumeShare, pullbackFromPeakPct } = signal.momentum;
 
   if (roundTripVolumeShare > config.maxRoundTripVolumeSharePct) {
     return {
@@ -194,6 +194,28 @@ export async function evaluateConviction(signal: BuySignal): Promise<ConvictionR
     return {
       passed: false,
       reason: `only ${uniqueBuyers} unique buyer(s) (min ${config.momentumMinUniqueBuyers}) — momentum looks concentrated in too few wallets to call it real holder-backed demand`,
+      positionSizeSol: fallbackSize,
+      score: 0,
+      breakdown: { momentum: 0, holderHealth: 1, washHealth: 1, creatorPct: null, top10Pct: null },
+    };
+  }
+
+  // "Buying the top" gate: clearing the buy-count/volume threshold only
+  // means enough happened during the window — it says nothing about
+  // whether price is still climbing right now. If the token's marketCapSol
+  // has already fallen back from its peak-within-the-window by the time we'd
+  // buy, the move is already fading and we'd be entering right as it
+  // reverses — traced directly to real trades that stopped out within
+  // 1-2 minutes of entry (see the live trade-ledger review this gate is a
+  // response to: 64% of closed live trades exited via stop-loss). Checked
+  // here (free — already computed by launchMonitor.ts) before the
+  // RPC-heavy holder-concentration lookup below.
+  if (pullbackFromPeakPct > config.maxEntryPullbackFromPeakPct) {
+    return {
+      passed: false,
+      reason: `price already pulled back ${(pullbackFromPeakPct * 100).toFixed(1)}% off its peak within the momentum window (max ${(
+        config.maxEntryPullbackFromPeakPct * 100
+      ).toFixed(0)}%) — looks like buying a move that's already fading, not one still building`,
       positionSizeSol: fallbackSize,
       score: 0,
       breakdown: { momentum: 0, holderHealth: 1, washHealth: 1, creatorPct: null, top10Pct: null },

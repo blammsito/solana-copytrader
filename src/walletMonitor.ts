@@ -26,6 +26,12 @@ export interface BuySignal {
     // wallets which also sold within the same window — see
     // maxRoundTripVolumeSharePct in config.ts.
     roundTripVolumeShare: number;
+    // How far (0-1) the token's marketCapSol has already pulled back from
+    // its peak-within-the-window by the time buy/volume thresholds were
+    // met — 0 if price was still at/near its high, higher if the move was
+    // already fading before we'd even buy. See maxEntryPullbackFromPeakPct
+    // in config.ts and the comment on trigger() in launchMonitor.ts.
+    pullbackFromPeakPct: number;
     // Which of launchMonitor.ts's two detection paths produced this signal
     // — a brand-new pump.fun launch, or a token that already migrated to a
     // real AMM showing fresh renewed momentum. Purely for logging/position

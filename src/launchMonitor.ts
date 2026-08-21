@@ -26,6 +26,16 @@ interface Candidate {
   // pubkey — used at trigger time to compute unique buyer count and the
   // round-trip (buy-then-sell-same-wallet) wash-trading signal.
   wallets: Map<string, WalletActivity>;
+  // Highest and most recent marketCapSol seen for this mint since we
+  // started tracking it — updated from every trade (buy AND sell; a sell
+  // that knocks the price down is exactly the signal we care about here,
+  // even though sells don't count toward buyCount/volumeSol momentum).
+  // Used at trigger time to detect "we cleared the buy/volume threshold,
+  // but the price already peaked and is fading" — see pullbackFromPeakPct
+  // in trigger(). null until the first trade message with a usable
+  // marketCapSol arrives.
+  peakMarketCapSol: number | null;
+  lastMarketCapSol: number | null;
 }
 
 interface Thresholds {
@@ -128,9 +138,22 @@ export function startLaunchMonitor(onSignal: SignalHandler) {
     }
     const roundTripVolumeShare = c.volumeSol > 0 ? roundTripVolumeSol / c.volumeSol : 0;
 
+    // "We cleared the buy/volume threshold" doesn't mean price is still
+    // climbing right now — a candidate can rack up enough buys+volume to
+    // trigger while its most recent trades are already reversing off a
+    // local peak (a whale sell, or buying just tapering off). Comparing the
+    // last trade's marketCapSol against the peak seen anywhere in the
+    // window catches that "already fading" case, which a pure buy-count/
+    // volume threshold can't — see conviction.ts's use of this value.
+    const pullbackFromPeakPct =
+      c.peakMarketCapSol && c.lastMarketCapSol && c.peakMarketCapSol > 0
+        ? (c.peakMarketCapSol - c.lastMarketCapSol) / c.peakMarketCapSol
+        : 0;
+
     console.log(
       `[launchMonitor] MOMENTUM signal (${c.source}): ${c.mint} — ${c.buyCount} buys / ${c.volumeSol.toFixed(3)} SOL / ` +
-        `${uniqueBuyers} unique buyers / ${(roundTripVolumeShare * 100).toFixed(0)}% round-trip volume ` +
+        `${uniqueBuyers} unique buyers / ${(roundTripVolumeShare * 100).toFixed(0)}% round-trip volume / ` +
+        `${(pullbackFromPeakPct * 100).toFixed(1)}% off peak ` +
         `within ${elapsedSec.toFixed(1)}s of ${c.source === 'launch' ? 'launch' : 'migration'}`
     );
 
@@ -145,6 +168,7 @@ export function startLaunchMonitor(onSignal: SignalHandler) {
         volumeSol: c.volumeSol,
         uniqueBuyers,
         roundTripVolumeShare,
+        pullbackFromPeakPct,
         source: c.source,
       },
     };
@@ -176,6 +200,8 @@ export function startLaunchMonitor(onSignal: SignalHandler) {
       volumeSol: 0,
       triggered: false,
       wallets: new Map(),
+      peakMarketCapSol: null,
+      lastMarketCapSol: null,
       windowTimer: setTimeout(
         () => dropCandidate(mint, `momentum window (${t.windowSec}s) elapsed without threshold`),
         t.windowSec * 1000
@@ -216,6 +242,18 @@ export function startLaunchMonitor(onSignal: SignalHandler) {
     if (!mint) return;
     const c = candidates.get(mint);
     if (!c || c.triggered) return;
+
+    // Update peak/last marketCapSol from every trade, buy or sell, before
+    // any of the buy-only logic below — a sell that knocks the price down
+    // still needs to move lastMarketCapSol so trigger()'s pullback check
+    // sees it, even though sells don't count toward buyCount/volumeSol.
+    // PumpPortal trade events carry marketCapSol directly (confirmed against
+    // live payloads — same field the 'create' event also reports).
+    const marketCapSol = Number(msg.marketCapSol);
+    if (Number.isFinite(marketCapSol) && marketCapSol > 0) {
+      c.lastMarketCapSol = marketCapSol;
+      c.peakMarketCapSol = c.peakMarketCapSol === null ? marketCapSol : Math.max(c.peakMarketCapSol, marketCapSol);
+    }
 
     if (msg.txType === 'sell') {
       // Sells don't count toward momentum (the bot's own exit logic
